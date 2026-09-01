@@ -24,19 +24,16 @@ const Command = union(enum) {
     builtin: struct {
         cmd: Builtins,
         args: []const u8,
-        raw: []const u8,
     },
 
     external: struct {
         bin: []const u8,
         args: []const u8,
-        raw: []const u8,
     },
 
     symlink: struct {
         src: []const u8,
         dest: []const u8,
-        raw: []const u8,
     },
 };
 
@@ -102,7 +99,7 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool)
             mem.startsWith(u8, recipe_line, ":sym") or
             mem.startsWith(u8, recipe_line, ":ex"))
         {
-            const cmd = try parseCmd(recipe_line);
+            const cmd = try parseCmd(arena, recipe_line);
             try current_workspace.?.commands.append(arena, cmd);
         } else if (mem.eql(u8, recipe_line, "}")) {
             std.debug.print("End of workspace: {}", .{current_workspace.?});
@@ -153,23 +150,39 @@ fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
     return wp;
 }
 
-fn parseCmd(src: []const u8) !Command {
+const CommandError = error{
+    UnknownInbuiltCmd,
+    InvalidSymlinkOptions,
+    MissingExternBin,
+} || Allocator.Error;
+fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
     var cmd: ?Command = null;
 
     var it = mem.splitScalar(u8, src, ' ');
     const first = it.next();
     if (first) |f| {
         if (mem.eql(u8, f, ":ex")) {
-            cmd = .{ .external = .{ .raw = src, .bin = "", .args = "" } };
+            cmd = .{ .external = .{ .bin = "", .args = "" } };
+
+            if (it.next()) |bin| cmd.?.external.bin = bin;
+
+            while (it.next()) |arg| {
+                if (cmd.?.external.args.len > 0) {
+                    cmd.?.external.args = try std.fmt.allocPrint(arena, "{s} {s}", .{ cmd.?.external.args, arg });
+                } else {
+                    cmd.?.external.args = try std.fmt.allocPrint(arena, "{s}", .{arg});
+                }
+            }
+
+            if (cmd.?.external.bin.len == 0) return CommandError.MissingExternBin;
         } else if (mem.eql(u8, f, ":b")) {
-            cmd = .{ .builtin = .{ .raw = src, .cmd = ._none, .args = "" } };
+            cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
         } else if (mem.eql(u8, f, ":sym")) {
-            cmd = .{ .symlink = .{ .raw = src, .src = "", .dest = "" } };
+            cmd = .{ .symlink = .{ .src = "", .dest = "" } };
         } else {
             fatal.fmt("Unknown command {q}", .{first.?});
         }
     }
-    if (cmd == null) return error.CommandErr;
 
     return cmd.?;
 }
