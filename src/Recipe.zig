@@ -13,6 +13,7 @@ const assert = std.debug.assert;
 const RECIPE_SRC = "recipe.stw";
 
 const Builtins = enum {
+    _none,
     create,
     copy,
     move,
@@ -54,8 +55,18 @@ pub fn init() Recipe {
 }
 
 pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator, verbose: bool) !void {
-    _ = io;
-    const src = "something";
+    const stat = std.Io.Dir.cwd().statFile(io, RECIPE_SRC, .{}) catch |err| switch (err) {
+        error.FileNotFound => fatal.fmt("'recipe.stw' not found", .{}),
+        else => return err,
+    };
+
+    if (stat.size == 0) {
+        fatal.fmt("{q} is empty, try adding a step \":ex echo 'Hello World'\"", .{RECIPE_SRC});
+    }
+
+    const file_contents = try arena.alloc(u8, stat.size);
+    const src = try std.Io.Dir.cwd().readFile(io, RECIPE_SRC, file_contents);
+
     try self.parseFromSrc(arena, src, verbose);
 }
 
@@ -83,6 +94,7 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool)
             }
             // current_workspace.?
             const wp = parseWorkspace(recipe_line) catch |err| switch (err) {
+                WorkspaceError.MissingName => reportError("Expected workspace name", recipe_line, RECIPE_SRC, line_count),
                 WorkspaceError.MissingDir => reportError("Expected workspace dir", recipe_line, RECIPE_SRC, line_count),
             };
             current_workspace.? = wp;
@@ -116,7 +128,7 @@ fn reportError(
     std.process.exit(1);
 }
 
-const WorkspaceError = error{MissingDir};
+const WorkspaceError = error{ MissingName, MissingDir };
 fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
     var wp: Workspace = .{
         .name = "",
@@ -126,9 +138,14 @@ fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
 
     var it = mem.tokenizeScalar(u8, src, ' ');
     _ = it.next(); // :wp identifier
-    if (it.next()) |name| wp.name = name;
-    if (it.next()) |dir| {
-        wp.dir = dir;
+    const name = it.next();
+    if (mem.eql(u8, name.?, "{")) return WorkspaceError.MissingName;
+
+    wp.name = name.?;
+
+    const dir_or_curly = it.next();
+    if (dir_or_curly != null and !mem.eql(u8, dir_or_curly.?, "{")) {
+        wp.dir = dir_or_curly.?;
     } else {
         return WorkspaceError.MissingDir;
     }
@@ -137,8 +154,24 @@ fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
 }
 
 fn parseCmd(src: []const u8) !Command {
-    _ = src;
-    return error.Unimplemented;
+    var cmd: ?Command = null;
+
+    var it = mem.splitScalar(u8, src, ' ');
+    const first = it.next();
+    if (first) |f| {
+        if (mem.eql(u8, f, ":ex")) {
+            cmd = .{ .external = .{ .raw = src, .bin = "", .args = "" } };
+        } else if (mem.eql(u8, f, ":b")) {
+            cmd = .{ .builtin = .{ .raw = src, .cmd = ._none, .args = "" } };
+        } else if (mem.eql(u8, f, ":sym")) {
+            cmd = .{ .symlink = .{ .raw = src, .src = "", .dest = "" } };
+        } else {
+            fatal.fmt("Unknown command {q}", .{first.?});
+        }
+    }
+    if (cmd == null) return error.CommandErr;
+
+    return cmd.?;
 }
 
 pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void {
@@ -147,7 +180,7 @@ pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void 
     _ = io;
     _ = arena;
 
-    return error.Unimplemented;
+    std.process.exit(0);
 }
 
 test parseFromSrc {
