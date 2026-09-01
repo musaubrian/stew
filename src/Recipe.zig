@@ -70,13 +70,15 @@ pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator, verbose: bo
 /// Parses out the recipe from the source file contents
 fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool) !void {
     _ = verbose;
-    var current_workspace: ?Workspace = .{
+    const root_workspace: Workspace = .{
         .name = "__root__",
         .dir = ".",
         .commands = .empty,
     };
 
-    try self.steps.append(arena, current_workspace.?);
+    var current_workspace: Workspace = root_workspace;
+
+    try self.steps.append(arena, current_workspace);
 
     var lines = mem.tokenizeScalar(u8, src, '\n');
     assert(lines.buffer.len > 0);
@@ -86,31 +88,30 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool)
         const recipe_line = mem.trim(u8, line, " ");
 
         if (mem.startsWith(u8, recipe_line, ":wp")) {
-            if (current_workspace != null and !mem.eql(u8, current_workspace.?.name, "__root__")) {
+            if (!mem.eql(u8, current_workspace.name, "__root__")) {
                 reportError("Nested workspaces are not supported", recipe_line, RECIPE_SRC, line_count);
             }
-            // current_workspace.?
             const wp = parseWorkspace(recipe_line) catch |err| switch (err) {
                 WorkspaceError.MissingName => reportError("Expected workspace name", recipe_line, RECIPE_SRC, line_count),
                 WorkspaceError.MissingDir => reportError("Expected workspace dir", recipe_line, RECIPE_SRC, line_count),
             };
-            current_workspace.? = wp;
+            current_workspace = wp;
         } else if (mem.startsWith(u8, recipe_line, ":b") or
             mem.startsWith(u8, recipe_line, ":sym") or
             mem.startsWith(u8, recipe_line, ":ex"))
         {
             const cmd = try parseCmd(arena, recipe_line);
-            try current_workspace.?.commands.append(arena, cmd);
+            try current_workspace.commands.append(arena, cmd);
         } else if (mem.eql(u8, recipe_line, "}")) {
-            std.debug.print("End of workspace: {}", .{current_workspace.?});
-            current_workspace = null;
+            std.debug.print("End of workspace: {s}\n", .{current_workspace.name});
+            current_workspace = root_workspace;
         } else if (mem.startsWith(u8, recipe_line, "//")) {
             continue;
         } else {
             reportError("Unexpected entry", recipe_line, RECIPE_SRC, line_count);
         }
 
-        if (current_workspace) |wp| try self.steps.append(arena, wp);
+        try self.steps.append(arena, current_workspace);
     }
 }
 
@@ -179,6 +180,9 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
             cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
         } else if (mem.eql(u8, f, ":sym")) {
             cmd = .{ .symlink = .{ .src = "", .dest = "" } };
+            if (it.next()) |s| cmd.?.symlink.src = s;
+            if (it.next()) |d| cmd.?.symlink.dest = d;
+            if (cmd.?.symlink.src.len == 0 or cmd.?.symlink.dest.len == 0) return CommandError.InvalidSymlinkOptions;
         } else {
             fatal.fmt("Unknown command {q}", .{first.?});
         }
@@ -193,7 +197,7 @@ pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void 
     _ = io;
     _ = arena;
 
-    std.process.exit(0);
+    std.process.exit(1);
 }
 
 test parseFromSrc {
