@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var verbose = false;
 
-    const args = init.minimal.args.toSlice(arena) catch |err| switch (err) {
+    var args = init.minimal.args.toSlice(arena) catch |err| switch (err) {
         error.OutOfMemory => |oom| fatal.oom(oom),
         error.Unexpected => fatal.fmt("Unexpected error when parsing args", .{}),
     };
@@ -49,7 +49,24 @@ pub fn main(init: std.process.Init) !void {
         },
         .help, .@"-h" => usage(),
         .check => try recipe.loadAndParse(io, arena),
-        .wp => fatal.fmt("workspace command uninmplemented", .{}),
+        .wp => {
+            args = args[2..]; // stew wp | ...
+            if (args.len == 0) fatal.fmt("Expected, 'list' or '<workspace>'", .{});
+            try recipe.loadAndParse(io, arena);
+
+            if (std.mem.eql(u8, args[0], "list")) {
+                for (recipe.steps.items, 0..) |wp, idx| {
+                    if (idx == 0) {
+                        std.debug.print(".\n", .{});
+                        continue;
+                    }
+
+                    const bar = if (idx != recipe.steps.items.len - 1) "├─" else "└─";
+                    std.debug.print("{s} {s} (cmds: {d})\n", .{ bar, wp.name, wp.commands.items.len });
+                }
+            } else {
+            }
+        },
     }
 
     _ = gpa;
