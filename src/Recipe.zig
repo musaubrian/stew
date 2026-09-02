@@ -11,6 +11,7 @@ const assert = std.debug.assert;
 
 /// Expects to find the recipe file at cwd/recipe.stw
 const RECIPE_SRC = "recipe.stw";
+const ROOT_WP = "__root__";
 
 const Builtins = enum {
     _none,
@@ -67,19 +68,10 @@ pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator) !void {
     try self.parseFromSrc(io, arena, src);
 }
 
-pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void {
-    _ = self;
-    _ = verbose;
-    _ = io;
-    _ = arena;
-
-    std.process.exit(1);
-}
-
 /// Parses out the recipe from the source file contents
 fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u8) !void {
-    const root_workspace: Workspace = .{
-        .name = "__root__",
+    var root_workspace: Workspace = .{
+        .name = ROOT_WP,
         .dir = ".",
         .commands = .empty,
     };
@@ -96,19 +88,25 @@ fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u
         const src = mem.trim(u8, line, " ");
 
         if (mem.startsWith(u8, src, ":wp")) {
-            if (!mem.eql(u8, current_workspace.name, "__root__")) {
+            if (!mem.eql(u8, current_workspace.name, ROOT_WP)) {
                 reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_count, 0);
             }
             const wp = parseWorkspace(io, src, line_count);
+            if (mem.eql(u8, current_workspace.name, ROOT_WP)) {
+                root_workspace = current_workspace; // save out root wp
+            }
             current_workspace = wp;
         } else if (mem.startsWith(u8, src, ":b") or
             mem.startsWith(u8, src, ":sym") or
             mem.startsWith(u8, src, ":ex"))
         {
             const cmd = parseCmd(io, arena, src, line_count) catch |err| fatal.oom(err);
-
             try current_workspace.commands.append(arena, cmd);
-        } else if (mem.eql(u8, src, "}")) {
+
+            if (mem.eql(u8, current_workspace.name, ROOT_WP)) {
+                root_workspace = current_workspace; // update saved out root to what is in current
+            }
+        } else if (mem.eql(u8, src, "}") or line_count - 1 == lines.buffer.len) {
             try self.steps.append(arena, current_workspace);
             current_workspace = root_workspace;
         } else if (mem.startsWith(u8, src, "//")) {
@@ -116,6 +114,9 @@ fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u
         } else {
             reportError(io, "Unexpected entry", src, RECIPE_SRC, line_count, src.len);
         }
+    } else {
+        assert(mem.eql(u8, self.steps.items[0].name, ROOT_WP));
+        self.steps.items[0] = root_workspace; // TODO :: a less nasty way of doing this
     }
 }
 
@@ -243,7 +244,7 @@ test "parse inline commands" {
     try recipe.parseFromSrc(allocator, src, true);
     try std.testing.expect(recipe.steps.items.len == 1);
     const root_wp = recipe.steps.items[0];
-    try std.testing.expect(mem.eql(u8, root_wp.name, "__root__"));
+    try std.testing.expect(mem.eql(u8, root_wp.name, ROOT_WP));
 }
 
 test "parse multiple workspaces" {
@@ -269,7 +270,7 @@ test "parse multiple workspaces" {
     var recipe: Recipe = .init();
     try recipe.parseFromSrc(allocator, src, true);
     try std.testing.expect(recipe.steps.items.len == 3);
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[0].name, "__root__"));
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[0].name, ROOT_WP));
 
     try std.testing.expect(mem.eql(u8, recipe.steps.items[1].name, "name"));
     try std.testing.expect(mem.eql(u8, recipe.steps.items[1].dir, "~/some/dir"));
