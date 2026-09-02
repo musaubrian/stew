@@ -94,6 +94,7 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
             const wp = parseWorkspace(src) catch |err| switch (err) {
                 WorkspaceError.MissingName => reportError("Expected workspace name", src, RECIPE_SRC, line_count),
                 WorkspaceError.MissingDir => reportError("Expected workspace dir", src, RECIPE_SRC, line_count),
+                WorkspaceError.Inlined => reportError("Inlining workspaces is not supported", src, RECIPE_SRC, line_count),
             };
             current_workspace = wp;
         } else if (mem.startsWith(u8, src, ":b") or
@@ -133,13 +134,15 @@ fn reportError(
     std.process.exit(1);
 }
 
-const WorkspaceError = error{ MissingName, MissingDir };
+const WorkspaceError = error{ MissingName, MissingDir, Inlined };
 fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
     var wp: Workspace = .{
         .name = "",
         .dir = "",
         .commands = .empty,
     };
+
+    if (mem.endsWith(u8, src, "}")) return WorkspaceError.Inlined;
 
     var it = mem.tokenizeScalar(u8, src, ' ');
     _ = it.next(); // :wp identifier
