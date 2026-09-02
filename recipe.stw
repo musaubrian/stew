@@ -1,0 +1,10 @@
+:ex echo hello world
+:ex git log --oneline
+
+:wp base . {
+    :sym src dest
+    :b create .example.show
+    :b delete .example.show
+}
+
+:wp inline . {}
