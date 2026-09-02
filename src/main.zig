@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .help, .@"-h" => usage(),
         .check => try recipe.loadAndParse(io, arena),
-        .wp => {
+        .wp => wp: {
             args = args[2..]; // stew wp | ...
             if (args.len == 0) fatal.fmt("Expected, 'list' or '<workspace>'", .{});
             try recipe.loadAndParse(io, arena);
@@ -64,6 +64,16 @@ pub fn main(init: std.process.Init) !void {
                     std.debug.print("{s} {s} (cmds: {d})\n", .{ bar, wp.name, wp.commands.items.len });
                 }
             } else {
+                const workspace = args[0];
+                for (recipe.steps.items) |wp| {
+                    if (std.mem.eql(u8, wp.name, workspace)) {
+                        try Recipe.executeWp(io, arena, wp, verbose);
+                        break :wp;
+
+                    }
+                } else {
+                    fatal.fmt("No workspace name {q} found", .{workspace});
+                }
             }
         },
     }
