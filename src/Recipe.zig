@@ -108,7 +108,6 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
             };
 
             try current_workspace.commands.append(arena, cmd);
-
         } else if (mem.eql(u8, src, "}")) {
             try self.steps.append(arena, current_workspace);
             current_workspace = root_workspace;
@@ -117,7 +116,6 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
         } else {
             reportError("Unexpected entry", src, RECIPE_SRC, line_count);
         }
-
     }
 }
 
@@ -234,8 +232,8 @@ test "parse inline commands" {
     const allocator = testing_arena.allocator();
 
     const src =
-    \\ :ex echo 'hello world';
-    \\ :b copy file1 file2
+        \\ :ex echo 'hello world';
+        \\ :b copy file1 file2
     ;
 
     var recipe: Recipe = .init();
@@ -251,18 +249,18 @@ test "parse multiple workspaces" {
     const allocator = testing_arena.allocator();
 
     const src =
-    \\ :ex echo 'hello world'
-    \\ :b copy file1 file2
-    \\
-    \\ :wp name ~/some/dir {
-    \\      :b delete ./to-trash
-    \\ }
-    \\
-    \\
-    \\ :wp 2 ./dir {
-    \\      :b copy ./src ./dest
-    \\      :sym /some/src /other/dest
-    \\ }
+        \\ :ex echo 'hello world'
+        \\ :b copy file1 file2
+        \\
+        \\ :wp name ~/some/dir {
+        \\      :b delete ./to-trash
+        \\ }
+        \\
+        \\
+        \\ :wp 2 ./dir {
+        \\      :b copy ./src ./dest
+        \\      :sym /some/src /other/dest
+        \\ }
     ;
 
     var recipe: Recipe = .init();
@@ -273,7 +271,6 @@ test "parse multiple workspaces" {
     try std.testing.expect(mem.eql(u8, recipe.steps.items[1].name, "name"));
     try std.testing.expect(mem.eql(u8, recipe.steps.items[1].dir, "~/some/dir"));
     try std.testing.expect(recipe.steps.items[1].commands.items.len == 1);
-
 
     try std.testing.expect(mem.eql(u8, recipe.steps.items[2].name, "2"));
     try std.testing.expect(mem.eql(u8, recipe.steps.items[2].dir, "./dir"));
