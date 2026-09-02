@@ -106,9 +106,11 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
                 CommandError.InvalidSymlinkOptions => reportError("Malformed symlink cmd", src, RECIPE_SRC, line_count),
                 CommandError.MissingExternBin => reportError("Missing executable to run", src, RECIPE_SRC, line_count),
             };
+
             try current_workspace.commands.append(arena, cmd);
+
         } else if (mem.eql(u8, src, "}")) {
-            std.debug.print("End of workspace: {s}\n", .{current_workspace.name});
+            try self.steps.append(arena, current_workspace);
             current_workspace = root_workspace;
         } else if (mem.startsWith(u8, src, "//")) {
             continue;
@@ -116,17 +118,19 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
             reportError("Unexpected entry", src, RECIPE_SRC, line_count);
         }
 
-        try self.steps.append(arena, current_workspace);
     }
 }
 
+/// TODO:: Find a proper way to have offsets for better
+/// error reporting
 fn reportError(
     message: []const u8,
     src: []const u8,
     file: []const u8,
     line: usize,
 ) noreturn {
-    std.debug.print("{s}:{d} ", .{ file, line });
+    const offset = 0;
+    std.debug.print("{s}:{d}:{d} ", .{ file, line, offset });
     std.debug.print("{s} {q}\n", .{ message, src });
     std.process.exit(1);
 }
@@ -224,20 +228,54 @@ pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void 
     std.process.exit(1);
 }
 
-test parseFromSrc {
+test "parse inline commands" {
     var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer testing_arena.deinit();
     const allocator = testing_arena.allocator();
 
     const src =
-        \\ // this is a comment
-        \\       :wp example {
-        \\
-        \\ }
+    \\ :ex echo 'hello world';
+    \\ :b copy file1 file2
     ;
+
     var recipe: Recipe = .init();
     try recipe.parseFromSrc(allocator, src, true);
-    try std.testing.expect(recipe.steps.items.len == 2);
+    try std.testing.expect(recipe.steps.items.len == 1);
     const root_wp = recipe.steps.items[0];
     try std.testing.expect(mem.eql(u8, root_wp.name, "__root__"));
+}
+
+test "parse multiple workspaces" {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+
+    const src =
+    \\ :ex echo 'hello world'
+    \\ :b copy file1 file2
+    \\
+    \\ :wp name ~/some/dir {
+    \\      :b delete ./to-trash
+    \\ }
+    \\
+    \\
+    \\ :wp 2 ./dir {
+    \\      :b copy ./src ./dest
+    \\      :sym /some/src /other/dest
+    \\ }
+    ;
+
+    var recipe: Recipe = .init();
+    try recipe.parseFromSrc(allocator, src, true);
+    try std.testing.expect(recipe.steps.items.len == 3);
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[0].name, "__root__"));
+
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[1].name, "name"));
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[1].dir, "~/some/dir"));
+    try std.testing.expect(recipe.steps.items[1].commands.items.len == 1);
+
+
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[2].name, "2"));
+    try std.testing.expect(mem.eql(u8, recipe.steps.items[2].dir, "./dir"));
+    try std.testing.expect(recipe.steps.items[2].commands.items.len == 2);
 }
