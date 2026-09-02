@@ -27,11 +27,14 @@ pub fn main(init: std.process.Init) !void {
 
     var recipe: Recipe = .init();
 
-    if (args.len == 1) try recipe.loadAndParse(io, arena, verbose);
+    if (args.len == 1) {
+        try recipe.loadAndParse(io, arena, verbose);
+        try recipe.execute(io, arena, verbose);
+    }
     if (args.len == 2 and std.mem.eql(u8, args[1], "-v")) {
         verbose = true;
         try recipe.loadAndParse(io, arena, verbose);
-        fatal.fmt("Run unimplemented", .{});
+        try recipe.execute(io, arena, verbose);
     }
 
     const cmd = std.meta.stringToEnum(Command, args[1]) orelse {

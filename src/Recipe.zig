@@ -68,7 +68,7 @@ pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator, verbose: bo
 }
 
 /// Parses out the recipe from the source file contents
-fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool) !void {
+fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: bool) !void {
     _ = verbose;
     const root_workspace: Workspace = .{
         .name = "__root__",
@@ -80,35 +80,40 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, src: []const u8, verbose: bool)
 
     try self.steps.append(arena, current_workspace);
 
-    var lines = mem.tokenizeScalar(u8, src, '\n');
+    var lines = mem.tokenizeScalar(u8, contents, '\n');
     assert(lines.buffer.len > 0);
 
     var line_count: usize = 1;
     while (lines.next()) |line| : (line_count += 1) {
-        const recipe_line = mem.trim(u8, line, " ");
+        const src = mem.trim(u8, line, " ");
 
-        if (mem.startsWith(u8, recipe_line, ":wp")) {
+        if (mem.startsWith(u8, src, ":wp")) {
             if (!mem.eql(u8, current_workspace.name, "__root__")) {
-                reportError("Nested workspaces are not supported", recipe_line, RECIPE_SRC, line_count);
+                reportError("Nested workspaces are not supported", src, RECIPE_SRC, line_count);
             }
-            const wp = parseWorkspace(recipe_line) catch |err| switch (err) {
-                WorkspaceError.MissingName => reportError("Expected workspace name", recipe_line, RECIPE_SRC, line_count),
-                WorkspaceError.MissingDir => reportError("Expected workspace dir", recipe_line, RECIPE_SRC, line_count),
+            const wp = parseWorkspace(src) catch |err| switch (err) {
+                WorkspaceError.MissingName => reportError("Expected workspace name", src, RECIPE_SRC, line_count),
+                WorkspaceError.MissingDir => reportError("Expected workspace dir", src, RECIPE_SRC, line_count),
             };
             current_workspace = wp;
-        } else if (mem.startsWith(u8, recipe_line, ":b") or
-            mem.startsWith(u8, recipe_line, ":sym") or
-            mem.startsWith(u8, recipe_line, ":ex"))
+        } else if (mem.startsWith(u8, src, ":b") or
+            mem.startsWith(u8, src, ":sym") or
+            mem.startsWith(u8, src, ":ex"))
         {
-            const cmd = try parseCmd(arena, recipe_line);
+            const cmd = parseCmd(arena, src) catch |err| switch (err) {
+                error.OutOfMemory => |oom| fatal.oom(oom),
+                CommandError.UnknownInbuiltCmd => reportError("Unknown builtin command", src, RECIPE_SRC, line_count),
+                CommandError.InvalidSymlinkOptions => reportError("Malformed symlink cmd", src, RECIPE_SRC, line_count),
+                CommandError.MissingExternBin => reportError("Missing executable to run", src, RECIPE_SRC, line_count),
+            };
             try current_workspace.commands.append(arena, cmd);
-        } else if (mem.eql(u8, recipe_line, "}")) {
+        } else if (mem.eql(u8, src, "}")) {
             std.debug.print("End of workspace: {s}\n", .{current_workspace.name});
             current_workspace = root_workspace;
-        } else if (mem.startsWith(u8, recipe_line, "//")) {
+        } else if (mem.startsWith(u8, src, "//")) {
             continue;
         } else {
-            reportError("Unexpected entry", recipe_line, RECIPE_SRC, line_count);
+            reportError("Unexpected entry", src, RECIPE_SRC, line_count);
         }
 
         try self.steps.append(arena, current_workspace);
@@ -178,6 +183,25 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
             if (cmd.?.external.bin.len == 0) return CommandError.MissingExternBin;
         } else if (mem.eql(u8, f, ":b")) {
             cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
+            if (it.next()) |ib| {
+                const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse return CommandError.UnknownInbuiltCmd;
+
+                cmd.?.builtin.cmd = switch (ib_cmd) {
+                    .copy => .copy,
+                    .move => .move,
+                    .delete => .delete,
+                    .create => .create,
+                    ._none => return CommandError.UnknownInbuiltCmd,
+                };
+
+                while (it.next()) |arg| {
+                    if (cmd.?.builtin.args.len > 0) {
+                        cmd.?.builtin.args = try std.fmt.allocPrint(arena, "{s} {s}", .{ cmd.?.builtin.args, arg });
+                    } else {
+                        cmd.?.builtin.args = try std.fmt.allocPrint(arena, "{s}", .{arg});
+                    }
+                }
+            }
         } else if (mem.eql(u8, f, ":sym")) {
             cmd = .{ .symlink = .{ .src = "", .dest = "" } };
             if (it.next()) |s| cmd.?.symlink.src = s;
