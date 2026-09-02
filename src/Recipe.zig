@@ -43,7 +43,7 @@ const Workspace = struct {
     commands: ArrayList(Command),
 };
 
-pub const Steps = ArrayList(Workspace);
+const Steps = ArrayList(Workspace);
 
 steps: Steps = .empty,
 
@@ -51,7 +51,7 @@ pub fn init() Recipe {
     return .{};
 }
 
-pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator, verbose: bool) !void {
+pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator) !void {
     const stat = std.Io.Dir.cwd().statFile(io, RECIPE_SRC, .{}) catch |err| switch (err) {
         error.FileNotFound => fatal.fmt("'recipe.stw' not found", .{}),
         else => return err,
@@ -64,12 +64,20 @@ pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator, verbose: bo
     const file_contents = try arena.alloc(u8, stat.size);
     const src = try std.Io.Dir.cwd().readFile(io, RECIPE_SRC, file_contents);
 
-    try self.parseFromSrc(arena, src, verbose);
+    try self.parseFromSrc(io, arena, src);
+}
+
+pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void {
+    _ = self;
+    _ = verbose;
+    _ = io;
+    _ = arena;
+
+    std.process.exit(1);
 }
 
 /// Parses out the recipe from the source file contents
-fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: bool) !void {
-    _ = verbose;
+fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u8) !void {
     const root_workspace: Workspace = .{
         .name = "__root__",
         .dir = ".",
@@ -89,24 +97,15 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
 
         if (mem.startsWith(u8, src, ":wp")) {
             if (!mem.eql(u8, current_workspace.name, "__root__")) {
-                reportError("Nested workspaces are not supported", src, RECIPE_SRC, line_count);
+                reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_count, 0);
             }
-            const wp = parseWorkspace(src) catch |err| switch (err) {
-                WorkspaceError.MissingName => reportError("Expected workspace name", src, RECIPE_SRC, line_count),
-                WorkspaceError.MissingDir => reportError("Expected workspace dir", src, RECIPE_SRC, line_count),
-                WorkspaceError.Inlined => reportError("Inlining workspaces is not supported", src, RECIPE_SRC, line_count),
-            };
+            const wp = parseWorkspace(io, src, line_count);
             current_workspace = wp;
         } else if (mem.startsWith(u8, src, ":b") or
             mem.startsWith(u8, src, ":sym") or
             mem.startsWith(u8, src, ":ex"))
         {
-            const cmd = parseCmd(arena, src) catch |err| switch (err) {
-                error.OutOfMemory => |oom| fatal.oom(oom),
-                CommandError.UnknownInbuiltCmd => reportError("Unknown builtin command", src, RECIPE_SRC, line_count),
-                CommandError.InvalidSymlinkOptions => reportError("Malformed symlink cmd", src, RECIPE_SRC, line_count),
-                CommandError.MissingExternBin => reportError("Missing executable to run", src, RECIPE_SRC, line_count),
-            };
+            const cmd = parseCmd(io, arena, src, line_count) catch |err| fatal.oom(err);
 
             try current_workspace.commands.append(arena, cmd);
         } else if (mem.eql(u8, src, "}")) {
@@ -115,39 +114,28 @@ fn parseFromSrc(self: *Recipe, arena: Allocator, contents: []const u8, verbose: 
         } else if (mem.startsWith(u8, src, "//")) {
             continue;
         } else {
-            reportError("Unexpected entry", src, RECIPE_SRC, line_count);
+            reportError(io, "Unexpected entry", src, RECIPE_SRC, line_count, src.len);
         }
     }
 }
 
-/// TODO:: Find a proper way to have offsets for better
-/// error reporting
-fn reportError(
-    message: []const u8,
-    src: []const u8,
-    file: []const u8,
-    line: usize,
-) noreturn {
-    const offset = 0;
-    std.debug.print("{s}:{d}:{d} ", .{ file, line, offset });
-    std.debug.print("{s} {q}\n", .{ message, src });
-    std.process.exit(1);
-}
-
-const WorkspaceError = error{ MissingName, MissingDir, Inlined };
-fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
+fn parseWorkspace(io: std.Io, src: []const u8, line: usize) Workspace {
     var wp: Workspace = .{
         .name = "",
         .dir = "",
         .commands = .empty,
     };
 
-    if (mem.endsWith(u8, src, "}")) return WorkspaceError.Inlined;
+    if (mem.endsWith(u8, src, "}")) {
+        reportError(io, "Inlining workspaces is not supported", src, RECIPE_SRC, line, src.len - 1);
+    }
 
     var it = mem.tokenizeScalar(u8, src, ' ');
-    _ = it.next(); // :wp identifier
+    const ident = it.next() orelse fatal.fmt("Expected to find ':wp' ident", .{}); // :wp identifier
     const name = it.next();
-    if (mem.eql(u8, name.?, "{")) return WorkspaceError.MissingName;
+    if (mem.eql(u8, name.?, "{")) {
+        reportError(io, "Expected workspace name", src, RECIPE_SRC, line, ident.len);
+    }
 
     wp.name = name.?;
 
@@ -155,19 +143,18 @@ fn parseWorkspace(src: []const u8) WorkspaceError!Workspace {
     if (dir_or_curly != null and !mem.eql(u8, dir_or_curly.?, "{")) {
         wp.dir = dir_or_curly.?;
     } else {
-        return WorkspaceError.MissingDir;
+        reportError(io, "Expected workspace dir", src, RECIPE_SRC, line, ident.len + wp.name.len + 1);
     }
 
     return wp;
 }
 
-const CommandError = error{
-    UnknownInbuiltCmd,
-    InvalidSymlinkOptions,
-    MissingExternBin,
-} || Allocator.Error;
-fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
+fn parseCmd(io: std.Io, arena: Allocator, src: []const u8, line: usize) Allocator.Error!Command {
     var cmd: ?Command = null;
+
+    if (mem.endsWith(u8, src, "}")) {
+        reportError(io, "Expected '}' on new line", src, RECIPE_SRC, line, src.len - 1);
+    }
 
     var it = mem.splitScalar(u8, src, ' ');
     const first = it.next();
@@ -175,7 +162,9 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
         if (mem.eql(u8, f, ":ex")) {
             cmd = .{ .external = .{ .bin = "", .args = "" } };
 
-            if (it.next()) |bin| cmd.?.external.bin = bin;
+            cmd.?.external.bin = it.next() orelse {
+                reportError(io, "Expected executable to run", src, RECIPE_SRC, line, f.len);
+            };
 
             while (it.next()) |arg| {
                 if (cmd.?.external.args.len > 0) {
@@ -184,19 +173,19 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
                     cmd.?.external.args = try std.fmt.allocPrint(arena, "{s}", .{arg});
                 }
             }
-
-            if (cmd.?.external.bin.len == 0) return CommandError.MissingExternBin;
         } else if (mem.eql(u8, f, ":b")) {
             cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
             if (it.next()) |ib| {
-                const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse return CommandError.UnknownInbuiltCmd;
+                const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse {
+                    reportError(io, "Unknown builtin command", src, RECIPE_SRC, line, f.len + 1);
+                };
 
                 cmd.?.builtin.cmd = switch (ib_cmd) {
                     .copy => .copy,
                     .move => .move,
                     .delete => .delete,
                     .create => .create,
-                    ._none => return CommandError.UnknownInbuiltCmd,
+                    ._none => reportError(io, "Unknown builtin command", src, RECIPE_SRC, line, f.len + 1),
                 };
 
                 while (it.next()) |arg| {
@@ -206,12 +195,13 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
                         cmd.?.builtin.args = try std.fmt.allocPrint(arena, "{s}", .{arg});
                     }
                 }
+            } else {
+                reportError(io, "Expected builtin command", src, RECIPE_SRC, line, f.len);
             }
         } else if (mem.eql(u8, f, ":sym")) {
             cmd = .{ .symlink = .{ .src = "", .dest = "" } };
-            if (it.next()) |s| cmd.?.symlink.src = s;
-            if (it.next()) |d| cmd.?.symlink.dest = d;
-            if (cmd.?.symlink.src.len == 0 or cmd.?.symlink.dest.len == 0) return CommandError.InvalidSymlinkOptions;
+            cmd.?.symlink.src = it.next() orelse reportError(io, "Expected symlink source", src, RECIPE_SRC, line, src.len);
+            cmd.?.symlink.dest = it.next() orelse reportError(io, "Expected symlink destination", src, RECIPE_SRC, line, src.len);
         } else {
             fatal.fmt("Unknown command {q}", .{first.?});
         }
@@ -220,11 +210,21 @@ fn parseCmd(arena: Allocator, src: []const u8) CommandError!Command {
     return cmd.?;
 }
 
-pub fn execute(self: Recipe, io: std.Io, arena: Allocator, verbose: bool) !void {
-    _ = self;
-    _ = verbose;
-    _ = io;
-    _ = arena;
+fn reportError(
+    _: std.Io,
+    message: []const u8,
+    src: []const u8,
+    file: []const u8,
+    line: usize,
+    offset: usize,
+) noreturn {
+    std.debug.print("{s}:{d}: {s}\n", .{ file, line, message });
+    std.debug.print("   {s}\n", .{src});
+
+    std.debug.print("   ", .{});
+    const safe_offset = if (offset > 1) offset else 1;
+    for (0..safe_offset) |_| std.debug.print(" ", .{});
+    std.debug.print("^\n", .{});
 
     std.process.exit(1);
 }
@@ -279,3 +279,18 @@ test "parse multiple workspaces" {
     try std.testing.expect(mem.eql(u8, recipe.steps.items[2].dir, "./dir"));
     try std.testing.expect(recipe.steps.items[2].commands.items.len == 2);
 }
+
+// var stdout_buffer: [1024]u8 = undefined;
+// var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
+// const stdout_writer = &stdout_file_writer.interface;
+// stdout_writer.print("{s}:{d}:{d}: {s}\n", .{ file, line, offset, message }) catch {};
+// stdout_writer.print("   {s}\n", .{src}) catch {};
+//
+// stdout_writer.print("   ", .{}) catch {};
+// for (0..offset-1) |_| {
+//     stdout_writer.print(" ", .{}) catch {};
+// }
+// stdout_writer.print("^\n", .{}) catch {};
+//
+//
+// stdout_writer.flush() catch {};

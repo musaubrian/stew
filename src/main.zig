@@ -28,12 +28,12 @@ pub fn main(init: std.process.Init) !void {
     var recipe: Recipe = .init();
 
     if (args.len == 1) {
-        try recipe.loadAndParse(io, arena, verbose);
+        try recipe.loadAndParse(io, arena);
         try recipe.execute(io, arena, verbose);
     }
     if (args.len == 2 and std.mem.eql(u8, args[1], "-v")) {
         verbose = true;
-        try recipe.loadAndParse(io, arena, verbose);
+        try recipe.loadAndParse(io, arena);
         try recipe.execute(io, arena, verbose);
     }
 
@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.cleanExit(io);
         },
         .help, .@"-h" => usage(),
-        .check => try recipe.loadAndParse(io, arena, verbose),
+        .check => try recipe.loadAndParse(io, arena),
         .wp => fatal.fmt("workspace command uninmplemented", .{}),
     }
 
