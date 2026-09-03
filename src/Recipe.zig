@@ -70,53 +70,42 @@ pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator) !void {
 
 /// Parses out the recipe from the source file contents
 fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u8) !void {
-    var root_workspace: Workspace = .{
+    var current_wp: u64 = 0;
+
+    try self.steps.append(arena, .{
         .name = ROOT_WP,
         .dir = ".",
         .commands = .empty,
-    };
-
-    var current_workspace: Workspace = root_workspace;
-
-    try self.steps.append(arena, current_workspace);
+    });
 
     var lines = mem.tokenizeScalar(u8, contents, '\n');
     assert(lines.buffer.len > 0);
 
-    var line_count: usize = 1;
-    while (lines.next()) |line| : (line_count += 1) {
+    var line_no: u64 = 1;
+    while (lines.next()) |line| : (line_no += 1) {
         const src = mem.trim(u8, line, " ");
 
         if (mem.startsWith(u8, src, ":wp")) {
-            if (!mem.eql(u8, current_workspace.name, ROOT_WP)) {
-                reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_count, 0);
-            }
-            const wp = parseWorkspace(io, src, line_count);
-            if (mem.eql(u8, current_workspace.name, ROOT_WP)) {
-                root_workspace = current_workspace; // save out root wp
-            }
-            current_workspace = wp;
+            if (current_wp != 0) reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_no, 0);
+            const wp = parseWorkspace(io, src, line_no);
+            try self.steps.append(arena, wp);
+            current_wp = @intCast(self.steps.items.len - 1);
         } else if (mem.startsWith(u8, src, ":b") or
             mem.startsWith(u8, src, ":sym") or
             mem.startsWith(u8, src, ":ex"))
         {
-            const cmd = parseCmd(io, arena, src, line_count) catch |err| fatal.oom(err);
-            try current_workspace.commands.append(arena, cmd);
-
-            if (mem.eql(u8, current_workspace.name, ROOT_WP)) {
-                root_workspace = current_workspace; // update saved out root to what is in current
-            }
-        } else if (mem.eql(u8, src, "}") or line_count - 1 == lines.buffer.len) {
-            try self.steps.append(arena, current_workspace);
-            current_workspace = root_workspace;
+            const cmd = parseCmd(io, arena, src, line_no) catch |err| fatal.oom(err);
+            try self.steps.items[current_wp].commands.append(arena, cmd);
+        } else if (mem.eql(u8, src, "}")) {
+            if (current_wp == 0) reportError(io, "Unexpected '}'", line, RECIPE_SRC, line_no, 0);
+            current_wp = 0;
         } else if (mem.startsWith(u8, src, "//")) {
             continue;
         } else {
-            reportError(io, "Unexpected entry", src, RECIPE_SRC, line_count, src.len);
+            reportError(io, "Unexpected entry", src, RECIPE_SRC, line_no, src.len);
         }
     } else {
-        assert(mem.eql(u8, self.steps.items[0].name, ROOT_WP));
-        self.steps.items[0] = root_workspace; // TODO :: a less nasty way of doing this
+        if (current_wp != 0) reportError(io, "Unclosed workspace block", "", RECIPE_SRC, line_no, 0);
     }
 }
 
