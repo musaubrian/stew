@@ -205,16 +205,16 @@ fn reportError(
     message: []const u8,
     src: []const u8,
     file: []const u8,
-    line: usize,
+    line_no: u64,
     offset: usize,
 ) noreturn {
-    std.debug.print("{s}:{d}: {s}\n", .{ file, line, message });
-    std.debug.print("   {s}\n", .{src});
-
-    std.debug.print("   ", .{});
-    const safe_offset = if (offset > 1) offset else 1;
-    for (0..safe_offset) |_| std.debug.print(" ", .{});
-    std.debug.print("^\n", .{});
+    std.debug.print("{s}:{d}: {s}\n", .{ file, line_no, message });
+    if (src.len != 0) {
+        std.debug.print("   {s}\n", .{src});
+        std.debug.print("   ", .{});
+        for (0..offset - 1) |_| std.debug.print(" ", .{});
+        std.debug.print("^\n", .{});
+    }
 
     std.process.exit(1);
 }
