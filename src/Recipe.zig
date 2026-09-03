@@ -78,12 +78,15 @@ fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u
         .commands = .empty,
     });
 
-    var lines = mem.tokenizeScalar(u8, contents, '\n');
+    var lines = mem.splitScalar(u8, contents, '\n');
     assert(lines.buffer.len > 0);
 
-    var line_no: u64 = 1;
-    while (lines.next()) |line| : (line_no += 1) {
+    var line_no: u64 = 0;
+    while (lines.next()) |line| {
+        line_no += 1;
+
         const src = mem.trim(u8, line, " ");
+        if (src.len == 0) continue;
 
         if (mem.startsWith(u8, src, ":wp")) {
             if (current_wp != 0) reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_no, 0);
