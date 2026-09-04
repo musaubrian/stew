@@ -3,23 +3,19 @@ const Recipe = @This();
 const std = @import("std");
 const fatal = @import("fatal.zig");
 
+const log = std.log;
 const mem = std.mem;
-const ArrayList = std.ArrayList;
+const Io = std.Io;
 const Allocator = mem.Allocator;
+const ArrayList = std.ArrayList;
 
 const assert = std.debug.assert;
 
-/// Expects to find the recipe file at cwd/recipe.stw
+/// Expects to find the recipe file at $cwd/recipe.stw
 const RECIPE_SRC = "recipe.stw";
-const ROOT_WP = "__root__";
+pub const ROOT_WP = "__root__";
 
-const Builtins = enum {
-    _none,
-    create,
-    copy,
-    move,
-    delete,
-};
+const Builtins = enum { _none, create, copy, move, delete };
 
 const Command = union(enum) {
     builtin: struct {
@@ -44,35 +40,183 @@ const Workspace = struct {
     commands: ArrayList(Command),
 };
 
-const Steps = ArrayList(Workspace);
+const Workspaces = ArrayList(Workspace);
 
-steps: Steps = .empty,
+workspaces: Workspaces = .empty,
 
 pub fn init() Recipe {
     return .{};
 }
 
-pub fn loadAndParse(self: *Recipe, io: std.Io, arena: mem.Allocator) !void {
-    const stat = std.Io.Dir.cwd().statFile(io, RECIPE_SRC, .{}) catch |err| switch (err) {
-        error.FileNotFound => fatal.fmt("'recipe.stw' not found", .{}),
-        else => return err,
+pub fn execute(self: Recipe, io: Io, arena: Allocator, trash_path: []const u8, verbose: bool) !void {
+    for (self.workspaces.items) |step| {
+        try executeWp(io, arena, step, trash_path, verbose);
+    }
+
+    std.process.exit(0);
+}
+
+pub fn executeWp(io: Io, arena: Allocator, wp: Workspace, trash_path: []const u8, verbose: bool) !void {
+    if (verbose) log.info("----- Running workspace {q}", .{wp.name});
+
+    for (wp.commands.items) |cmd| {
+        switch (cmd) {
+            .builtin => try execBuiltin(io, arena, cmd.builtin.cmd, cmd.builtin.args, trash_path, verbose),
+            .symlink => try execSymlink(io, cmd.symlink.src, cmd.symlink.dest, verbose),
+            .external => try execExternal(io, arena, cmd.external.bin, cmd.external.args, verbose),
+        }
+    }
+
+    if (verbose) log.info("----- Ran {d} commands\n", .{wp.commands.items.len});
+}
+
+fn execExternal(
+    io: Io,
+    arena: Allocator,
+    bin: []const u8,
+    args: []const u8,
+    verbose: bool,
+) !void {
+    if (verbose) log.info("\tcmd> {s} {s}", .{ bin, args });
+
+    // TODO :: Add a way to specify a timeout from the stew file?
+    const results = std.process.run(arena, io, .{ .argv = &.{ bin, args } }) catch |err| {
+        fatal.fmt("Cmd {q} failed: {s}", .{ bin, @errorName(err) });
     };
+
+    if (verbose) {
+        const out = if (results.term.success())
+            results.stdout
+        else
+            results.stderr;
+
+        std.debug.print("\t{s}", .{out});
+
+        switch (results.term) {
+            .exited => |code| {
+                if (code != 0)
+                    return std.debug.print("\tterminated with code {d}\n", .{code});
+            },
+            .signal => |sig| return std.debug.print("\tterminated with signal {t}\n", .{sig}),
+            .stopped => |sig| return std.debug.print("\tstopped with signal {t}\n", .{sig}),
+            .unknown => return std.debug.print("\tterminated unexpectedly\n", .{}),
+        }
+    }
+}
+
+fn execSymlink(io: Io, src: []const u8, dest: []const u8, verbose: bool) !void {
+    if (verbose) log.info("\tsym> {s} -> {s}", .{ dest, src });
+    const stat = try Io.Dir.cwd().statFile(io, src, .{});
+    try Io.Dir.cwd().symLinkAtomic(
+        io,
+        src,
+        dest,
+        .{ .is_directory = stat.kind == .directory },
+    );
+}
+
+fn execBuiltin(
+    io: Io,
+    arena: Allocator,
+    builtin: Builtins,
+    args: []const u8,
+    trash_path: []const u8,
+    verbose: bool,
+) !void {
+    if (verbose) log.info("\tblt> {} {s}", .{ builtin, args });
+
+    const is_directory = mem.endsWith(u8, args, Io.Dir.path.sep_str);
+    switch (builtin) {
+        .create => {
+            if (is_directory) {
+                Io.Dir.cwd().createDir(io, args, .default_dir) catch |err|
+                    switch (err) {
+                        error.PathAlreadyExists => {
+                            if (verbose) {
+                                log.info("\tPath {q} already exists; skipping\n", .{args});
+                            }
+                        },
+                        else => return err,
+                    };
+            } else {
+                var atomic_file = try Io.Dir.cwd().createFileAtomic(io, args, .{});
+                atomic_file.link(io) catch |err|
+                    switch (err) {
+                        error.PathAlreadyExists => {
+                            if (verbose) {
+                                log.info("\tPath {q} already exists; skipping\n", .{args});
+                            }
+                        },
+                        else => return err,
+                    };
+            }
+        },
+        .copy => {
+            if (is_directory) fatal.fmt("Copying directories is unimplemented", .{});
+
+            var it = mem.splitScalar(u8, args, ' ');
+            const copy_src = it.next() orelse unreachable;
+            const copy_dest = it.next() orelse unreachable;
+
+            try Io.Dir.cwd().copyFile(copy_src, Io.Dir.cwd(), copy_dest, io, .{});
+        },
+        .move => {
+            if (is_directory) {
+                var it = Io.Dir.cwd().iterate();
+                while (try it.next(io)) |entry| {
+                    std.log.debug("move_dir: {any}", .{entry});
+                }
+                fatal.fmt("Copying directories is unimplemented", .{});
+            }
+
+            var it = mem.splitScalar(u8, args, ' ');
+            const move_src = it.next() orelse unreachable;
+            const move_dest = it.next() orelse unreachable;
+            try Io.Dir.cwd().rename(move_src, .cwd(), move_dest, io);
+        },
+        .delete => del: {
+            if (is_directory) {
+                // TODO :: move to .trash first, then actually delete after everything gets done
+                try Io.Dir.cwd().deleteTree(io, args);
+                break :del;
+            }
+
+            // We must always have the trash dir when we start up the application
+            _ = Io.Dir.statFile(.cwd(), io, trash_path, .{}) catch |err|
+                switch (err) {
+                    error.FileNotFound => unreachable,
+                    else => return err,
+                };
+
+            const del_dest = try Io.Dir.path.join(arena, &.{ trash_path, args });
+            try Io.Dir.cwd().rename(args, .cwd(), del_dest, io);
+        },
+        ._none => unreachable,
+    }
+}
+
+pub fn loadAndParse(self: *Recipe, io: Io, arena: mem.Allocator) !void {
+    const stat = Io.Dir.cwd().statFile(io, RECIPE_SRC, .{}) catch |err|
+        switch (err) {
+            error.FileNotFound => fatal.fmt("'recipe.stw' not found", .{}),
+            else => return err,
+        };
 
     if (stat.size == 0) {
         fatal.fmt("{q} is empty, try adding a step \":ex echo 'Hello World'\"", .{RECIPE_SRC});
     }
 
     const file_contents = try arena.alloc(u8, stat.size);
-    const src = try std.Io.Dir.cwd().readFile(io, RECIPE_SRC, file_contents);
+    const src = try Io.Dir.cwd().readFile(io, RECIPE_SRC, file_contents);
 
     try self.parseFromSrc(io, arena, src);
 }
 
 /// Parses out the recipe from the source file contents
-fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u8) !void {
+fn parseFromSrc(self: *Recipe, io: Io, arena: Allocator, contents: []const u8) !void {
     var current_wp: u64 = 0;
 
-    try self.steps.append(arena, .{
+    try self.workspaces.append(arena, .{
         .name = ROOT_WP,
         .dir = ".",
         .commands = .empty,
@@ -82,37 +226,55 @@ fn parseFromSrc(self: *Recipe, io: std.Io, arena: Allocator, contents: []const u
     assert(lines.buffer.len > 0);
 
     var line_no: u64 = 0;
-    while (lines.next()) |line| {
+    parse: while (lines.next()) |line| {
         line_no += 1;
 
         const src = mem.trim(u8, line, " ");
-        if (src.len == 0) continue;
+        if (src.len == 0) continue :parse;
 
         if (mem.startsWith(u8, src, ":wp")) {
-            if (current_wp != 0) reportError(io, "Nested workspaces are not supported", src, RECIPE_SRC, line_no, 0);
+            if (current_wp != 0) reportError(
+                io,
+                "Nested workspaces are not supported",
+                .{ .src = src, .file = RECIPE_SRC, .line_no = line_no, .offset = 0 },
+            );
             const wp = parseWorkspace(io, src, line_no);
-            try self.steps.append(arena, wp);
-            current_wp = @intCast(self.steps.items.len - 1);
+            try self.workspaces.append(arena, wp);
+            current_wp = @intCast(self.workspaces.items.len - 1);
         } else if (mem.startsWith(u8, src, ":b") or
             mem.startsWith(u8, src, ":sym") or
             mem.startsWith(u8, src, ":ex"))
         {
             const cmd = parseCmd(io, arena, src, line_no) catch |err| fatal.oom(err);
-            try self.steps.items[current_wp].commands.append(arena, cmd);
+            try self.workspaces.items[current_wp].commands.append(arena, cmd);
         } else if (mem.eql(u8, src, "}")) {
-            if (current_wp == 0) reportError(io, "Unexpected '}'", line, RECIPE_SRC, line_no, 0);
+            if (current_wp == 0) reportError(io, "Unexpected '}'", .{
+                .src = src,
+                .file = RECIPE_SRC,
+                .line_no = line_no,
+                .offset = 0,
+            });
+
             current_wp = 0;
         } else if (mem.startsWith(u8, src, "//")) {
-            continue;
+            continue :parse;
         } else {
-            reportError(io, "Unexpected entry", src, RECIPE_SRC, line_no, src.len);
+            reportError(
+                io,
+                "Unexpected entry",
+                .{ .src = src, .file = RECIPE_SRC, .line_no = line_no, .offset = 0 },
+            );
         }
     } else {
-        if (current_wp != 0) reportError(io, "Unclosed workspace block", "", RECIPE_SRC, line_no, 0);
+        if (current_wp != 0) reportError(
+            io,
+            "Unclosed workspace block",
+            .{ .src = "", .file = RECIPE_SRC, .line_no = line_no, .offset = 0 },
+        );
     }
 }
 
-fn parseWorkspace(io: std.Io, src: []const u8, line: usize) Workspace {
+fn parseWorkspace(io: Io, src: []const u8, line: usize) Workspace {
     var wp: Workspace = .{
         .name = "",
         .dir = "",
@@ -120,14 +282,33 @@ fn parseWorkspace(io: std.Io, src: []const u8, line: usize) Workspace {
     };
 
     if (mem.endsWith(u8, src, "}")) {
-        reportError(io, "Inlining workspaces is not supported", src, RECIPE_SRC, line, src.len - 1);
+        reportError(
+            io,
+            "Inlining workspaces is not supported",
+            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len - 1 },
+        );
     }
 
     var it = mem.tokenizeScalar(u8, src, ' ');
-    const ident = it.next() orelse fatal.fmt("Expected to find ':wp' ident", .{}); // :wp identifier
+
+    // we already know that this line starts with :wp,
+    // before getting dropped to this fn
+    const ident = it.next() orelse unreachable;
+
     const name = it.next();
     if (mem.eql(u8, name.?, "{")) {
-        reportError(io, "Expected workspace name", src, RECIPE_SRC, line, ident.len);
+        reportError(
+            io,
+            "Expected workspace name",
+            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = ident.len },
+        );
+    }
+    if (mem.eql(u8, name.?, ROOT_WP)) {
+        reportError(
+            io,
+            "'__root__' is a reserved workspace name",
+            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = ident.len },
+        );
     }
 
     wp.name = name.?;
@@ -136,17 +317,30 @@ fn parseWorkspace(io: std.Io, src: []const u8, line: usize) Workspace {
     if (dir_or_curly != null and !mem.eql(u8, dir_or_curly.?, "{")) {
         wp.dir = dir_or_curly.?;
     } else {
-        reportError(io, "Expected workspace dir", src, RECIPE_SRC, line, ident.len + wp.name.len + 1);
+        reportError(
+            io,
+            "Expected workspace dir",
+            .{
+                .src = src,
+                .file = RECIPE_SRC,
+                .line_no = line,
+                .offset = ident.len + wp.name.len + 1,
+            },
+        );
     }
 
     return wp;
 }
 
-fn parseCmd(io: std.Io, arena: Allocator, src: []const u8, line: usize) Allocator.Error!Command {
+fn parseCmd(io: Io, arena: Allocator, src: []const u8, line: usize) Allocator.Error!Command {
     var cmd: ?Command = null;
 
     if (mem.endsWith(u8, src, "}")) {
-        reportError(io, "Expected '}' on new line", src, RECIPE_SRC, line, src.len - 1);
+        reportError(
+            io,
+            "Expected '}' on new line",
+            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len - 1 },
+        );
     }
 
     var it = mem.splitScalar(u8, src, ' ');
@@ -155,9 +349,12 @@ fn parseCmd(io: std.Io, arena: Allocator, src: []const u8, line: usize) Allocato
         if (mem.eql(u8, f, ":ex")) {
             cmd = .{ .external = .{ .bin = "", .args = "" } };
 
-            cmd.?.external.bin = it.next() orelse {
-                reportError(io, "Expected executable to run", src, RECIPE_SRC, line, f.len);
-            };
+            cmd.?.external.bin = it.next() orelse
+                reportError(
+                    io,
+                    "Expected executable to run",
+                    .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = f.len },
+                );
 
             while (it.next()) |arg| {
                 if (cmd.?.external.args.len > 0) {
@@ -169,32 +366,86 @@ fn parseCmd(io: std.Io, arena: Allocator, src: []const u8, line: usize) Allocato
         } else if (mem.eql(u8, f, ":b")) {
             cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
             if (it.next()) |ib| {
-                const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse {
-                    reportError(io, "Unknown builtin command", src, RECIPE_SRC, line, f.len + 1);
-                };
+                const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse
+                    reportError(
+                        io,
+                        "Unknown builtin command",
+                        .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = f.len + 1 },
+                    );
 
                 cmd.?.builtin.cmd = switch (ib_cmd) {
                     .copy => .copy,
                     .move => .move,
                     .delete => .delete,
                     .create => .create,
-                    ._none => reportError(io, "Unknown builtin command", src, RECIPE_SRC, line, f.len + 1),
+                    ._none => reportError(io, "Unknown builtin command", .{
+                        .src = src,
+                        .file = RECIPE_SRC,
+                        .line_no = line,
+                        .offset = f.len + 1,
+                    }),
                 };
 
-                while (it.next()) |arg| {
+                var arg_count: u32 = 0;
+                while (it.next()) |arg| : (arg_count += 1) {
                     if (cmd.?.builtin.args.len > 0) {
                         cmd.?.builtin.args = try std.fmt.allocPrint(arena, "{s} {s}", .{ cmd.?.builtin.args, arg });
                     } else {
                         cmd.?.builtin.args = try std.fmt.allocPrint(arena, "{s}", .{arg});
                     }
                 }
+
+                {
+                    if (arg_count == 0)
+                        reportError(
+                            io,
+                            "Expected arguments after builtin cmd",
+                            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len },
+                        );
+
+                    if ((cmd.?.builtin.cmd == .create or
+                        cmd.?.builtin.cmd == .delete) and arg_count > 1)
+                    {
+                        reportError(
+                            io,
+                            "More than one file/directory specified",
+                            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len },
+                        );
+                    }
+
+                    if ((cmd.?.builtin.cmd == .copy or
+                        cmd.?.builtin.cmd == .move) and arg_count < 2)
+                    {
+                        reportError(
+                            io,
+                            "Expected destination",
+                            .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len },
+                        );
+                    }
+                }
             } else {
-                reportError(io, "Expected builtin command", src, RECIPE_SRC, line, f.len);
+                reportError(
+                    io,
+                    "Expected builtin command",
+                    .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = f.len },
+                );
             }
         } else if (mem.eql(u8, f, ":sym")) {
             cmd = .{ .symlink = .{ .src = "", .dest = "" } };
-            cmd.?.symlink.src = it.next() orelse reportError(io, "Expected symlink source", src, RECIPE_SRC, line, src.len);
-            cmd.?.symlink.dest = it.next() orelse reportError(io, "Expected symlink destination", src, RECIPE_SRC, line, src.len);
+
+            cmd.?.symlink.src = it.next() orelse
+                reportError(
+                    io,
+                    "Expected symlink source",
+                    .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len },
+                );
+
+            cmd.?.symlink.dest = it.next() orelse
+                reportError(
+                    io,
+                    "Expected symlink destination",
+                    .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = src.len },
+                );
         } else {
             fatal.fmt("Unknown command {q}", .{first.?});
         }
@@ -204,18 +455,15 @@ fn parseCmd(io: std.Io, arena: Allocator, src: []const u8, line: usize) Allocato
 }
 
 fn reportError(
-    _: std.Io,
+    _: Io,
     message: []const u8,
-    src: []const u8,
-    file: []const u8,
-    line_no: u64,
-    offset: usize,
+    ctx: struct { src: []const u8, file: []const u8, line_no: u64, offset: usize },
 ) noreturn {
-    std.debug.print("{s}:{d}: {s}\n", .{ file, line_no, message });
-    if (src.len != 0) {
-        std.debug.print("   {s}\n", .{src});
+    std.debug.print("{s}:{d}: {s}\n", .{ ctx.file, ctx.line_no, message });
+    if (ctx.src.len != 0) {
+        std.debug.print("   {s}\n", .{ctx.src});
         std.debug.print("   ", .{});
-        for (0..offset - 1) |_| std.debug.print(" ", .{});
+        for (0..ctx.offset) |_| std.debug.print(" ", .{});
         std.debug.print("^\n", .{});
     }
 
@@ -233,9 +481,9 @@ test "parse inline commands" {
     ;
 
     var recipe: Recipe = .init();
-    try recipe.parseFromSrc(allocator, src, true);
-    try std.testing.expect(recipe.steps.items.len == 1);
-    const root_wp = recipe.steps.items[0];
+    try recipe.parseFromSrc(std.testing.io, allocator, src);
+    try std.testing.expect(recipe.workspaces.items.len == 1);
+    const root_wp = recipe.workspaces.items[0];
     try std.testing.expect(mem.eql(u8, root_wp.name, ROOT_WP));
 }
 
@@ -260,30 +508,15 @@ test "parse multiple workspaces" {
     ;
 
     var recipe: Recipe = .init();
-    try recipe.parseFromSrc(allocator, src, true);
-    try std.testing.expect(recipe.steps.items.len == 3);
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[0].name, ROOT_WP));
+    try recipe.parseFromSrc(std.testing.io, allocator, src);
+    try std.testing.expect(recipe.workspaces.items.len == 3);
+    try std.testing.expect(mem.eql(u8, recipe.workspaces.items[0].name, ROOT_WP));
 
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[1].name, "name"));
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[1].dir, "~/some/dir"));
-    try std.testing.expect(recipe.steps.items[1].commands.items.len == 1);
+    try std.testing.expect(mem.eql(u8, recipe.workspaces.items[1].name, "name"));
+    try std.testing.expect(mem.eql(u8, recipe.workspaces.items[1].dir, "~/some/dir"));
+    try std.testing.expect(recipe.workspaces.items[1].commands.items.len == 1);
 
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[2].name, "2"));
-    try std.testing.expect(mem.eql(u8, recipe.steps.items[2].dir, "./dir"));
-    try std.testing.expect(recipe.steps.items[2].commands.items.len == 2);
+    try std.testing.expect(mem.eql(u8, recipe.workspaces.items[2].name, "2"));
+    try std.testing.expect(mem.eql(u8, recipe.workspaces.items[2].dir, "./dir"));
+    try std.testing.expect(recipe.workspaces.items[2].commands.items.len == 2);
 }
-
-// var stdout_buffer: [1024]u8 = undefined;
-// var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-// const stdout_writer = &stdout_file_writer.interface;
-// stdout_writer.print("{s}:{d}:{d}: {s}\n", .{ file, line, offset, message }) catch {};
-// stdout_writer.print("   {s}\n", .{src}) catch {};
-//
-// stdout_writer.print("   ", .{}) catch {};
-// for (0..offset-1) |_| {
-//     stdout_writer.print(" ", .{}) catch {};
-// }
-// stdout_writer.print("^\n", .{}) catch {};
-//
-//
-// stdout_writer.flush() catch {};
