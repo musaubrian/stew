@@ -58,6 +58,7 @@ pub fn execute(
     for (self.workspaces.items) |step| {
         try executeWp(io, arena, step, trash_path, verbose);
     }
+    std.process.exit(0);
 }
 
 pub fn executeWp(
@@ -88,9 +89,11 @@ fn execExternal(
     verbose: bool,
 ) !void {
     if (verbose) log.info("\tcmd> {s} {s}", .{ bin, args });
+    const raw = try mem.join(arena, " ", &[_][]const u8{ bin, args });
+    const proper_args = try split_str(arena, raw, ' ');
 
     // TODO :: Add a way to specify a timeout from the stew file?
-    const results = std.process.run(arena, io, .{ .argv = &.{ bin, args } }) catch |err| {
+    const results = std.process.run(arena, io, .{ .argv = proper_args }) catch |err| {
         fatal.fmt("Cmd {q} failed: {s}", .{ bin, @errorName(err) });
     };
 
