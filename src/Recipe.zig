@@ -48,15 +48,25 @@ pub fn init() Recipe {
     return .{};
 }
 
-pub fn execute(self: Recipe, io: Io, arena: Allocator, trash_path: []const u8, verbose: bool) !void {
+pub fn execute(
+    self: Recipe,
+    io: Io,
+    arena: Allocator,
+    trash_path: []const u8,
+    verbose: bool,
+) !void {
     for (self.workspaces.items) |step| {
         try executeWp(io, arena, step, trash_path, verbose);
     }
-
-    std.process.exit(0);
 }
 
-pub fn executeWp(io: Io, arena: Allocator, wp: Workspace, trash_path: []const u8, verbose: bool) !void {
+pub fn executeWp(
+    io: Io,
+    arena: Allocator,
+    wp: Workspace,
+    trash_path: []const u8,
+    verbose: bool,
+) !void {
     if (verbose) log.info("----- Running workspace {q}", .{wp.name});
 
     for (wp.commands.items) |cmd| {
@@ -129,15 +139,7 @@ fn execBuiltin(
     switch (builtin) {
         .create => {
             if (is_directory) {
-                Io.Dir.cwd().createDir(io, args, .default_dir) catch |err|
-                    switch (err) {
-                        error.PathAlreadyExists => {
-                            if (verbose) {
-                                log.info("\tPath {q} already exists; skipping\n", .{args});
-                            }
-                        },
-                        else => return err,
-                    };
+                try Io.Dir.cwd().createDirPath(io, args);
             } else {
                 var atomic_file = try Io.Dir.cwd().createFileAtomic(io, args, .{});
                 atomic_file.link(io) catch |err|
@@ -187,8 +189,23 @@ fn execBuiltin(
                     error.FileNotFound => unreachable,
                     else => return err,
                 };
+            var del_dest = args;
+            const deletion_path_chunks = try split_str(arena, args, Io.Dir.path.sep);
 
-            const del_dest = try Io.Dir.path.join(arena, &.{ trash_path, args });
+            if (deletion_path_chunks.len > 1) {
+                const path_to_rebuild = try join_str(
+                    arena,
+                    deletion_path_chunks[0 .. deletion_path_chunks.len - 1],
+                    Io.Dir.path.sep_str,
+                );
+                const joined = try Io.Dir.path.join(arena, &.{ trash_path, path_to_rebuild });
+                try Io.Dir.createDirPath(.cwd(), io, joined);
+                del_dest = try Io.Dir.path.join(
+                    arena,
+                    &.{ joined, deletion_path_chunks[deletion_path_chunks.len - 1] },
+                );
+            }
+
             try Io.Dir.cwd().rename(args, .cwd(), del_dest, io);
         },
         ._none => unreachable,
@@ -470,6 +487,39 @@ fn reportError(
     std.process.exit(1);
 }
 
+pub fn dir(_: Recipe, io: Io, path: []const u8, verbose: bool, mode: enum { create, destroy }) !void {
+    switch (mode) {
+        .create => {
+            if (verbose) std.log.info("\tCreating {q}", .{path});
+            try std.Io.Dir.createDirPath(.cwd(), io, path);
+        },
+        .destroy => {
+            if (verbose) std.log.info("\tDeleting {q}", .{path});
+            std.Io.Dir.deleteTree(.cwd(), io, path) catch |err|
+                fatal.fmt("Failed to delete .trash dir: {s}", .{@errorName(err)});
+        },
+    }
+}
+
+fn split_str(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
+    var buf: ArrayList([]const u8) = .empty;
+
+    var it = mem.splitScalar(u8, buffer, delimiter);
+    while (it.next()) |item| try buf.append(gpa, item);
+
+    return try buf.toOwnedSlice(gpa);
+}
+
+fn join_str(gpa: Allocator, buffer: [][]const u8, joiner: []const u8) ![]const u8 {
+    var str: []const u8 = "";
+
+    for (buffer) |item| {
+        str = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ str, item, joiner });
+    }
+
+    return str;
+}
+
 test "parse inline commands" {
     var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer testing_arena.deinit();
@@ -519,4 +569,42 @@ test "parse multiple workspaces" {
     try std.testing.expect(mem.eql(u8, recipe.workspaces.items[2].name, "2"));
     try std.testing.expect(mem.eql(u8, recipe.workspaces.items[2].dir, "./dir"));
     try std.testing.expect(recipe.workspaces.items[2].commands.items.len == 2);
+}
+
+test "builtin" {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+    const io = std.testing.io;
+
+    const src =
+        \\ :b create .test/
+        \\ :b create .test/nested/
+        \\ :b create .test/stew
+        \\ :b copy   .test/stew .test/stew_copy
+        \\ :b create .test/to_delete
+        \\ :b delete .test/to_delete
+        \\
+        \\ :wp example . {
+        \\   :b create .test/to_move
+        \\   :b move   .test/to_move .test/nested/to_move
+        \\ }
+        \\
+    ;
+    const trash_dir = ".testing_trash";
+    var recipe: Recipe = .init();
+    try recipe.dir(io, trash_dir, false, .create);
+    defer recipe.dir(io, trash_dir, false, .destroy) catch unreachable;
+
+    try recipe.parseFromSrc(std.testing.io, allocator, src);
+    try recipe.execute(std.testing.io, allocator, trash_dir, false);
+
+    _ = try Io.Dir.cwd().statFile(io, ".test/stew", .{});
+    _ = try Io.Dir.cwd().statFile(io, ".test/stew_copy", .{});
+    _ = Io.Dir.cwd().statFile(io, trash_dir ++ "/.test/to_delete", .{}) catch {
+        std.debug.print("stat failed herer", .{});
+    };
+    _ = try Io.Dir.cwd().statFile(io, ".test/nested/to_move", .{});
+
+    try recipe.dir(io, ".test", false, .destroy);
 }
