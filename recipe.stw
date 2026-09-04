@@ -1,10 +1,9 @@
-:ex echo hello world
-:ex git log --oneline
+// example
 
 :wp base . {
-    :sym src dest
-    :b create .example.show
-    :b delete .example.show
+    :ex echo "hello world"
+    :ex git log --oneline
+    :b create test.md/
+    :b delete test.md/
 }
 
-:wp inline . {}
