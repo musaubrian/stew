@@ -11,8 +11,8 @@ const ArrayList = std.ArrayList;
 
 const assert = std.debug.assert;
 
-/// Expects to find the recipe file at $cwd/recipe.stw
-const RECIPE_SRC = "recipe.stw";
+/// Expects to find the recipe file at $cwd/recipe.pot
+const RECIPE_SRC = "recipe.pot";
 pub const ROOT_WP = "__root__";
 
 const Builtins = enum { _none, create, copy, move, delete };
@@ -218,7 +218,7 @@ fn execBuiltin(
 pub fn loadAndParse(self: *Recipe, io: Io, arena: mem.Allocator) !void {
     const stat = Io.Dir.cwd().statFile(io, RECIPE_SRC, .{}) catch |err|
         switch (err) {
-            error.FileNotFound => fatal.fmt("'recipe.stw' not found", .{}),
+            error.FileNotFound => fatal.fmt("{q} not found", .{RECIPE_SRC}),
             else => return err,
         };
 

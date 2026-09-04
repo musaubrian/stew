@@ -1,6 +1,6 @@
 .{
     .name = .stew,
-    .version = "0.0.1",
+    .version = "0.1.0",
     .minimum_zig_version = "0.17.0-dev.1946+d813faaf0",
     .paths = .{""},
     .fingerprint = 0xdddd6b9ff369b418,
