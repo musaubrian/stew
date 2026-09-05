@@ -1,9 +1,13 @@
 // example
+// :before all these
+:ex echo should now be
+:b create test/
+:b create test/sample
+:b delete test/sample
 
-:wp base . {
-    :ex echo "hello world"
-    :ex git log --oneline
-    :b create test.md/
-    :b delete test.md/
+:wp base {
+  :ex echo "hello world"
+  :ex git log --oneline
+  :b create test.md/
+  :b delete test.md/
 }
-
