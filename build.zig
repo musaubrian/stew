@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) void {
         .{ .root_source_file = b.path("build.zig.zon") },
     ));
 
+    const version_opts = b.addOptions();
+    version_opts.addOption(std.lang.Optimize, "mode", optimize);
+    exe.root_module.addOptions("version", version_opts);
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");

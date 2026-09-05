@@ -58,8 +58,11 @@ pub fn main(init: std.process.Init) !void {
 
     switch (cmd) {
         .version => {
-            std.debug.print("{s}\n", .{@import("build.zig.zon").version});
-            std.process.cleanExit(io);
+            std.debug.print(
+                "{s}{}\n",
+                .{ @import("build.zig.zon").version, @import("version").mode },
+            );
+            std.process.exit(0);
         },
         .help, .@"-h" => usage(),
         .check => try recipe.loadAndParse(io, arena),
