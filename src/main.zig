@@ -42,12 +42,12 @@ pub fn main(init: std.process.Init) !void {
     {
         if (args.len == 1) { // stew
             try recipe.loadAndParse(io, arena);
-            try recipe.execute(io, arena, trash_dir_path, verbose);
+            try recipe.executeAndExit(io, arena, trash_dir_path, verbose);
         }
 
         if (args.len <= 2 and verbose) { // != stew -v
             try recipe.loadAndParse(io, arena);
-            try recipe.execute(io, arena, trash_dir_path, verbose);
+            try recipe.executeAndExit(io, arena, trash_dir_path, verbose);
         }
     }
 
@@ -81,9 +81,18 @@ pub fn main(init: std.process.Init) !void {
                     }
 
                     const bar = if (idx != recipe.workspaces.items.len - 1) "├─" else "└─";
+
+                    var cmd_count: u32 = 0;
+                    for (wp.entries.items) |entry| {
+                        switch (entry) {
+                            .comment => {},
+                            .command => cmd_count += 1,
+                        }
+                    }
+
                     std.debug.print(
                         "{s} {s} (cmds: {d})\n",
-                        .{ bar, wp.name, wp.commands.items.len },
+                        .{ bar, wp.name, cmd_count },
                     );
                 }
             } else {
@@ -111,6 +120,7 @@ fn usage() noreturn {
         \\  wp          Interact with workspaces
         \\  check       Checks recipe file for errors
         \\  clean       Removes non-user artifacts created (e.g .trash dir)
+        \\  fmt         Formats the recipe file in place
         \\
         \\  version     Print version number and exit
         \\  help, -h    Print this help message and exit
