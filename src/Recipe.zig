@@ -504,6 +504,94 @@ pub fn dir(_: Recipe, io: Io, path: []const u8, verbose: bool, mode: enum { crea
     }
 }
 
+pub fn fmtPot(
+    self: Recipe,
+    io: Io,
+    arena: Allocator,
+) !void {
+    var formatted_src = try Io.Dir.cwd().createFileAtomic(
+        io,
+        RECIPE_SRC,
+        .{ .replace = true },
+    );
+
+    var buffer: [1024]u8 = undefined;
+    var file_writer = formatted_src.file.writer(io, &buffer);
+    const writer = &file_writer.interface;
+
+    const formatted = try self.fmt(arena);
+
+    try writer.writeAll(formatted);
+    try writer.flush();
+
+    try formatted_src.replace(io);
+}
+
+fn fmt(
+    self: Recipe,
+    arena: Allocator,
+) ![]const u8 {
+    assert(self.workspaces.items.len != 0);
+
+    var sb: ArrayList([]const u8) = .empty;
+    for (self.workspaces.items, 0..) |wp, wp_idx| {
+        if (wp_idx != 0) {
+            try sb.append(arena, try std.fmt.allocPrint(arena, "\n:wp {s} {{", .{wp.name}));
+        }
+        const indent = if (wp_idx == 0) "" else "  ";
+        for (wp.entries.items) |entry| {
+            switch (entry) {
+                .comment => |c| try sb.append(arena, c),
+                .command => |cmd| {
+                    switch (cmd) {
+                        .builtin => |b| {
+                            const b_str = switch (b.cmd) {
+                                .copy => "copy",
+                                .create => "create",
+                                .delete => "delete",
+                                .move => "move",
+                                ._none => unreachable,
+                            };
+                            try sb.append(
+                                arena,
+                                try std.fmt.allocPrint(
+                                    arena,
+                                    "{s}:b {s} {s}",
+                                    .{ indent, b_str, b.args },
+                                ),
+                            );
+                        },
+                        .external => |ex| {
+                            try sb.append(
+                                arena,
+                                try std.fmt.allocPrint(
+                                    arena,
+                                    "{s}:ex {s} {s}",
+                                    .{ indent, ex.bin, ex.args },
+                                ),
+                            );
+                        },
+                        .symlink => |sym| {
+                            try sb.append(
+                                arena,
+                                try std.fmt.allocPrint(
+                                    arena,
+                                    "{s}:sym {s} {s}",
+                                    .{ indent, sym.src, sym.dest },
+                                ),
+                            );
+                        },
+                    }
+                },
+            }
+        }
+        if (wp_idx != 0) try sb.append(arena, "}");
+    }
+
+    const slices = try sb.toOwnedSlice(arena);
+    return try mem.join(arena, "\n", slices);
+}
+
 fn split_str(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
     var buf: ArrayList([]const u8) = .empty;
 
@@ -511,16 +599,6 @@ fn split_str(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
     while (it.next()) |item| try buf.append(gpa, item);
 
     return try buf.toOwnedSlice(gpa);
-}
-
-fn join_str(gpa: Allocator, buffer: [][]const u8, joiner: []const u8) ![]const u8 {
-    var str: []const u8 = "";
-
-    for (buffer) |item| {
-        str = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ str, item, joiner });
-    }
-
-    return str;
 }
 
 test "parse inline commands" {
@@ -610,4 +688,37 @@ test "builtin" {
     _ = try Io.Dir.cwd().statFile(io, ".test/nested/to_move", .{});
 
     try recipe.dir(io, ".test", false, .destroy);
+}
+
+test fmt {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+    const io = std.testing.io;
+
+    const src =
+        \\ :wp    example {
+        \\:b create         something
+        \\      :ex echo hello
+        \\ }
+        \\ // should come first
+        \\   :sym example com
+        \\
+    ;
+
+    const expected_formatted =
+        \\// should come first
+        \\:sym example com
+        \\
+        \\:wp example {
+        \\  :b create something
+        \\  :ex echo hello
+        \\}
+    ;
+
+    var recipe: Recipe = .init();
+    try recipe.parseFromSrc(io, allocator, src);
+
+    const formatted = try recipe.fmt(allocator);
+    try std.testing.expectEqualStrings(expected_formatted, formatted);
 }

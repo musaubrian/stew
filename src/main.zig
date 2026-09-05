@@ -13,6 +13,7 @@ const Command = enum {
     wp,
     check,
     clean,
+    fmt,
     help,
     @"-h",
 };
@@ -63,6 +64,10 @@ pub fn main(init: std.process.Init) !void {
         .help, .@"-h" => usage(),
         .check => try recipe.loadAndParse(io, arena),
         .clean => try recipe.dir(io, trash_dir_path, verbose, .destroy),
+        .fmt => {
+            try recipe.loadAndParse(io, arena);
+            try recipe.fmtPot(io, arena);
+        },
         .wp => wp: {
             args = args[2..]; // stew wp | ...
             if (args.len == 0) fatal.fmt("Expected, 'list' or '<workspace>'", .{});
