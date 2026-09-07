@@ -145,13 +145,16 @@ fn execSymlink(
     home_path: ?[]const u8,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tsym> {s} -> {s}", .{ sym.dest, sym.src });
+    const src = try expandHome(arena, sym.src, home_path);
+    const dest = try expandHome(arena, sym.dest, home_path);
 
-    const stat = try Io.Dir.cwd().statFile(io, sym.src, .{});
-    try Io.Dir.cwd().symLink(
+    if (verbose) log.info("\tsym> {s} -> {s}", .{ dest, src });
+
+    const stat = try Io.Dir.cwd().statFile(io, src, .{});
+    try Io.Dir.cwd().symLinkAtomic(
         io,
-        try expandHome(arena, sym.src, home_path),
-        try expandHome(arena, sym.dest, home_path),
+        src,
+        dest,
         .{ .is_directory = stat.kind == .directory },
     );
 }
