@@ -1,6 +1,7 @@
 const std = @import("std");
 const fatal = @import("fatal.zig");
 const Recipe = @import("Recipe.zig");
+const known_folders = @import("known_folders");
 
 comptime {
     _ = @import("Recipe.zig");
@@ -24,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
     var verbose = false;
 
     const trash_dir_path = ".trash";
+    const maybe_home_path = try known_folders.getPath(io, arena, init.environ_map, .home);
 
     var args = init.minimal.args.toSlice(arena) catch |err| switch (err) {
         error.OutOfMemory => |oom| fatal.oom(oom),
@@ -42,12 +44,12 @@ pub fn main(init: std.process.Init) !void {
     {
         if (args.len == 1) { // stew
             try recipe.loadAndParse(io, arena);
-            try recipe.executeAndExit(io, arena, trash_dir_path, verbose);
+            try recipe.executeAndExit(io, arena, trash_dir_path, maybe_home_path, verbose);
         }
 
         if (args.len <= 2 and verbose) { // != stew -v
             try recipe.loadAndParse(io, arena);
-            try recipe.executeAndExit(io, arena, trash_dir_path, verbose);
+            try recipe.executeAndExit(io, arena, trash_dir_path, maybe_home_path, verbose);
         }
     }
 
@@ -104,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
 
                 for (recipe.workspaces.items) |wp| {
                     if (mem.eql(u8, wp.name, workspace)) {
-                        try Recipe.executeWp(io, arena, wp, trash_dir_path, verbose);
+                        try Recipe.executeWp(io, arena, wp, maybe_home_path, trash_dir_path, verbose);
                         break :wp;
                     }
                 } else {

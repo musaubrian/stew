@@ -1,6 +1,12 @@
 .{
     .name = .stew,
     .version = "0.2.1",
+    .dependencies = .{
+        .known_folders = .{
+            .url = "git+https://github.com/ziglibs/known-folders.git#6da0d0c41b78b9ed2d34fa364fcb81b5ebece6c4",
+            .hash = "known_folders-0.0.0-Fy-PJiDLAAB98m3uYUzatrTb2mO2fpvwx2zpSroEtfbO",
+        },
+    },
     .minimum_zig_version = "0.17.0-dev.1946+d813faaf0",
     .paths = .{""},
     .fingerprint = 0xdddd6b9ff369b418,

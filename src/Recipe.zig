@@ -14,24 +14,18 @@ const assert = std.debug.assert;
 /// Expects to find the recipe file at $cwd/recipe.pot
 const RECIPE_SRC = "recipe.pot";
 pub const ROOT_WP = "__root__";
+const HOME_IDENT = "@home";
 
 const Builtins = enum { _none, create, copy, move, delete };
 
+const BuiltinCmd = struct { cmd: Builtins, args: []const u8 };
+const ExternalCmd = struct { bin: []const u8, args: []const u8 };
+const SymlinkCmd = struct { src: []const u8, dest: []const u8 };
+
 const Command = union(enum) {
-    builtin: struct {
-        cmd: Builtins,
-        args: []const u8,
-    },
-
-    external: struct {
-        bin: []const u8,
-        args: []const u8,
-    },
-
-    symlink: struct {
-        src: []const u8,
-        dest: []const u8,
-    },
+    builtin: BuiltinCmd,
+    external: ExternalCmd,
+    symlink: SymlinkCmd,
 };
 
 const Entry = union(enum) {
@@ -57,9 +51,10 @@ pub fn executeAndExit(
     io: Io,
     arena: Allocator,
     trash_path: []const u8,
+    home_path: ?[]const u8,
     verbose: bool,
 ) noreturn {
-    self.execute(io, arena, trash_path, verbose) catch |err| {
+    self.execute(io, arena, trash_path, home_path, verbose) catch |err| {
         fatal.fmt("Execute failed: {s}", .{@errorName(err)});
     };
 
@@ -71,10 +66,12 @@ pub fn execute(
     io: Io,
     arena: Allocator,
     trash_path: []const u8,
+    home_path: ?[]const u8,
     verbose: bool,
 ) !void {
+    if (home_path == null) std.log.warn("No HOME directory found", .{});
     for (self.workspaces.items) |step| {
-        try executeWp(io, arena, step, trash_path, verbose);
+        try executeWp(io, arena, step, home_path, trash_path, verbose);
     }
 }
 
@@ -82,6 +79,7 @@ pub fn executeWp(
     io: Io,
     arena: Allocator,
     wp: Workspace,
+    home_path: ?[]const u8,
     trash_path: []const u8,
     verbose: bool,
 ) !void {
@@ -92,9 +90,9 @@ pub fn executeWp(
             .comment => {},
             .command => |cmd| {
                 switch (cmd) {
-                    .builtin => try execBuiltin(io, arena, cmd.builtin.cmd, cmd.builtin.args, trash_path, verbose),
-                    .symlink => try execSymlink(io, cmd.symlink.src, cmd.symlink.dest, verbose),
-                    .external => try execExternal(io, arena, cmd.external.bin, cmd.external.args, verbose),
+                    .builtin => |blt| try execBuiltin(io, arena, blt, home_path, trash_path, verbose),
+                    .symlink => |sym| try execSymlink(io, arena, sym, home_path, verbose),
+                    .external => |ex| try execExternal(io, arena, ex, verbose),
                 }
             },
         }
@@ -106,17 +104,16 @@ pub fn executeWp(
 fn execExternal(
     io: Io,
     arena: Allocator,
-    bin: []const u8,
-    args: []const u8,
+    ex: ExternalCmd,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tcmd> {s} {s}", .{ bin, args });
-    const raw = try mem.join(arena, " ", &[_][]const u8{ bin, args });
+    if (verbose) log.info("\tcmd> {s} {s}", .{ ex.bin, ex.args });
+    const raw = try mem.join(arena, " ", &[_][]const u8{ ex.bin, ex.args });
     const proper_args = try split_str(arena, raw, ' ');
 
     // TODO :: Add a way to specify a timeout from the stew file?
     const results = std.process.run(arena, io, .{ .argv = proper_args }) catch |err| {
-        fatal.fmt("Cmd {q} failed: {s}", .{ bin, @errorName(err) });
+        fatal.fmt("Cmd {q} failed: {s}", .{ ex.bin, @errorName(err) });
     };
 
     if (verbose) {
@@ -143,16 +140,18 @@ fn execExternal(
 
 fn execSymlink(
     io: Io,
-    src: []const u8,
-    dest: []const u8,
+    arena: Allocator,
+    sym: SymlinkCmd,
+    home_path: ?[]const u8,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tsym> {s} -> {s}", .{ dest, src });
-    const stat = try Io.Dir.cwd().statFile(io, src, .{});
-    try Io.Dir.cwd().symLinkAtomic(
+    if (verbose) log.info("\tsym> {s} -> {s}", .{ sym.dest, sym.src });
+
+    const stat = try Io.Dir.cwd().statFile(io, sym.src, .{});
+    try Io.Dir.cwd().symLink(
         io,
-        src,
-        dest,
+        try expandHome(arena, sym.src, home_path),
+        try expandHome(arena, sym.dest, home_path),
         .{ .is_directory = stat.kind == .directory },
     );
 }
@@ -160,25 +159,27 @@ fn execSymlink(
 fn execBuiltin(
     io: Io,
     arena: Allocator,
-    builtin: Builtins,
-    args: []const u8,
+    blt: BuiltinCmd,
+    home_path: ?[]const u8,
     trash_path: []const u8,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tblt> {} {s}", .{ builtin, args });
+    if (verbose) log.info("\tblt> {} {s}", .{ blt.cmd, blt.args });
 
-    const is_directory = mem.endsWith(u8, args, Io.Dir.path.sep_str);
-    switch (builtin) {
+    const pathed_args = try expandHome(arena, blt.args, home_path);
+
+    const is_directory = mem.endsWith(u8, blt.args, Io.Dir.path.sep_str);
+    switch (blt.cmd) {
         .create => {
             if (is_directory) {
-                try Io.Dir.cwd().createDirPath(io, args);
+                try Io.Dir.cwd().createDirPath(io, pathed_args);
             } else {
-                var atomic_file = try Io.Dir.cwd().createFileAtomic(io, args, .{});
+                var atomic_file = try Io.Dir.cwd().createFileAtomic(io, pathed_args, .{});
                 atomic_file.link(io) catch |err|
                     switch (err) {
                         error.PathAlreadyExists => {
                             if (verbose) {
-                                log.info("\tPath {q} already exists; skipping\n", .{args});
+                                log.info("\tPath {q} already exists; skipping\n", .{blt.args});
                             }
                         },
                         else => return err,
@@ -188,7 +189,7 @@ fn execBuiltin(
         .copy => {
             if (is_directory) fatal.fmt("Copying directories is unimplemented", .{});
 
-            var it = mem.splitScalar(u8, args, ' ');
+            var it = mem.splitScalar(u8, blt.args, ' ');
             const copy_src = it.next() orelse unreachable;
             const copy_dest = it.next() orelse unreachable;
 
@@ -203,7 +204,7 @@ fn execBuiltin(
                 fatal.fmt("Copying directories is unimplemented", .{});
             }
 
-            var it = mem.splitScalar(u8, args, ' ');
+            var it = mem.splitScalar(u8, blt.args, ' ');
             const move_src = it.next() orelse unreachable;
             const move_dest = it.next() orelse unreachable;
             try Io.Dir.cwd().rename(move_src, .cwd(), move_dest, io);
@@ -211,7 +212,7 @@ fn execBuiltin(
         .delete => del: {
             if (is_directory) {
                 // TODO :: move to .trash first, then actually delete after everything gets done
-                try Io.Dir.cwd().deleteTree(io, args);
+                try Io.Dir.cwd().deleteTree(io, blt.args);
                 break :del;
             }
 
@@ -221,8 +222,8 @@ fn execBuiltin(
                     error.FileNotFound => unreachable,
                     else => return err,
                 };
-            var del_dest = args;
-            const deletion_path_chunks = try split_str(arena, args, Io.Dir.path.sep);
+            var del_dest = blt.args;
+            const deletion_path_chunks = try split_str(arena, blt.args, Io.Dir.path.sep);
 
             if (deletion_path_chunks.len > 1) {
                 const path_to_rebuild = try mem.join(
@@ -239,7 +240,7 @@ fn execBuiltin(
                 );
             }
 
-            try Io.Dir.cwd().rename(args, .cwd(), del_dest, io);
+            try Io.Dir.cwd().rename(blt.args, .cwd(), del_dest, io);
         },
         ._none => unreachable,
     }
@@ -646,6 +647,12 @@ fn split_str(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
     return try buf.toOwnedSlice(gpa);
 }
 
+fn expandHome(gpa: Allocator, path: []const u8, home: ?[]const u8) ![]const u8 {
+    if (!mem.startsWith(u8, path, HOME_IDENT) or home == null) return path;
+
+    return try mem.replaceOwned(u8, gpa, path, HOME_IDENT, home.?);
+}
+
 test "parse inline commands" {
     var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer testing_arena.deinit();
@@ -703,6 +710,7 @@ test "builtin" {
 
     const src =
         \\ :b create .test/
+        \\ :sym .test/ .test/sample
         \\ :b create .test/nested/
         \\ :b create .test/stew
         \\ :b copy   .test/stew .test/stew_copy
@@ -713,6 +721,7 @@ test "builtin" {
         \\   :b create .test/to_move
         \\   :b move   .test/to_move .test/nested/to_move
         \\ }
+        \\ :ex ls ~/work/
         \\
     ;
     const trash_dir = ".testing_trash";
@@ -721,7 +730,7 @@ test "builtin" {
     defer recipe.dir(io, trash_dir, false, .destroy) catch unreachable;
 
     try recipe.parseFromSrc(std.testing.io, allocator, src);
-    try recipe.execute(std.testing.io, allocator, trash_dir, false);
+    try recipe.execute(std.testing.io, allocator, trash_dir, null, false);
 
     _ = try Io.Dir.cwd().statFile(io, ".test/stew", .{});
     _ = try Io.Dir.cwd().statFile(io, ".test/stew_copy", .{});

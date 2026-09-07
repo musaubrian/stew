@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const known_folders = b.dependency(
+        "known_folders",
+        .{ .target = target, .optimize = optimize },
+    ).module("known-folders");
+
     const exe = b.addExecutable(.{
         .name = "stew",
         .root_module = b.createModule(.{
@@ -15,6 +20,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("build.zig.zon", b.createModule(
         .{ .root_source_file = b.path("build.zig.zon") },
     ));
+    exe.root_module.addImport("known_folders", known_folders);
 
     const version_opts = b.addOptions();
     version_opts.addOption(std.lang.Optimize, "mode", optimize);
