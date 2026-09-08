@@ -1,6 +1,6 @@
 .{
     .name = .stew,
-    .version = "0.3.2",
+    .version = "0.4.0",
     .dependencies = .{
         .known_folders = .{
             .url = "git+https://github.com/ziglibs/known-folders.git#6da0d0c41b78b9ed2d34fa364fcb81b5ebece6c4",

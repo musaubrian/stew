@@ -11,8 +11,8 @@ const ArrayList = std.ArrayList;
 
 const assert = std.debug.assert;
 
-/// Expects to find the recipe file at $cwd/recipe.pot
-const RECIPE_SRC = "recipe.pot";
+/// Expects to find the recipe file at $cwd/recipe.stwf
+const RECIPE_SRC = "recipe.stwf";
 pub const ROOT_WP = "__root__";
 const HOME_IDENT = "@home";
 
