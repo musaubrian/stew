@@ -562,7 +562,6 @@ pub fn fmtPot(
         RECIPE_SRC,
         .{ .replace = true },
     );
-    defer formatted_src.file.close(io);
 
     var buffer: [1024]u8 = undefined;
     var file_writer = formatted_src.file.writer(io, &buffer);
