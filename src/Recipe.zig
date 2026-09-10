@@ -5,6 +5,7 @@ const fatal = @import("fatal.zig");
 
 const log = std.log;
 const mem = std.mem;
+const fmt = std.fmt;
 const Io = std.Io;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -16,7 +17,11 @@ const RECIPE_SRC = "recipe.stwf";
 pub const ROOT_WP = "__root__";
 const HOME_IDENT = "@home";
 
-const Builtins = enum { _none, create, copy, move, delete };
+/// The maximum number of arguments on oneline (external cmds)
+/// before we multiline it
+const MAX_ARGS_ON_LINE = 6;
+
+const Builtins = enum { create, copy, move, delete };
 
 const BuiltinCmd = struct { cmd: Builtins, args: []const u8 };
 const ExternalCmd = struct { bin: []const u8, args: []const u8 };
@@ -41,9 +46,10 @@ const Workspace = struct {
 const Workspaces = ArrayList(Workspace);
 
 workspaces: Workspaces = .empty,
+testing: bool = false,
 
-pub fn init() Recipe {
-    return .{};
+pub fn init(ctx: struct { testing: bool }) Recipe {
+    return .{ .testing = ctx.testing };
 }
 
 pub fn executeAndExit(
@@ -69,7 +75,7 @@ pub fn execute(
     home_path: ?[]const u8,
     verbose: bool,
 ) !void {
-    if (home_path == null) std.log.warn("No HOME directory found", .{});
+    if (home_path == null and !self.testing) std.log.warn("No HOME directory found", .{});
     for (self.workspaces.items) |step| {
         try executeWp(io, arena, step, home_path, trash_path, verbose);
     }
@@ -85,10 +91,13 @@ pub fn executeWp(
 ) !void {
     if (verbose) log.info("----- Running workspace {q}", .{wp.name});
 
+    var cmd_count: u32 = 0;
     for (wp.entries.items) |entries| {
         switch (entries) {
             .comment => {},
             .command => |cmd| {
+                cmd_count += 1;
+
                 switch (cmd) {
                     .builtin => |blt| try execBuiltin(io, arena, blt, home_path, trash_path, verbose),
                     .symlink => |sym| try execSymlink(io, arena, sym, home_path, verbose),
@@ -98,7 +107,7 @@ pub fn executeWp(
         }
     }
 
-    if (verbose) log.info("----- Ran {d} commands\n", .{wp.entries.items.len});
+    if (verbose) log.info("----- Ran {d} commands\n", .{cmd_count});
 }
 
 fn execExternal(
@@ -107,7 +116,7 @@ fn execExternal(
     ex: ExternalCmd,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tcmd> {s} {s}", .{ ex.bin, ex.args });
+    if (verbose) log.info("cmd> {s} {s}", .{ ex.bin, ex.args });
     const raw = try mem.join(arena, " ", &[_][]const u8{ ex.bin, ex.args });
     const proper_args = try split_str(arena, raw, ' ');
 
@@ -124,17 +133,18 @@ fn execExternal(
 
         // Should the external cmds output get logged uncondionally
         // or only if verbose is set?
-        if (out.len > 0) std.debug.print("\t{s}", .{out});
+        if (out.len > 0) std.debug.print("{s}", .{out});
 
         switch (results.term) {
             .exited => |code| {
-                if (code != 0)
-                    return std.debug.print("\tterminated with code {d}\n", .{code});
+                if (code != 0) std.debug.print("terminated with code {d}\n", .{code});
             },
-            .signal => |sig| return std.debug.print("\tterminated with signal {t}\n", .{sig}),
-            .stopped => |sig| return std.debug.print("\tstopped with signal {t}\n", .{sig}),
-            .unknown => return std.debug.print("\tterminated unexpectedly\n", .{}),
+            .signal => |sig| std.debug.print("terminated with signal {t}\n", .{sig}),
+            .stopped => |sig| std.debug.print("stopped with signal {t}\n", .{sig}),
+            .unknown => std.debug.print("terminated unexpectedly\n", .{}),
         }
+
+        if (!results.term.success()) fatal.fmt("Run Exec failed", .{});
     }
 }
 
@@ -148,7 +158,7 @@ fn execSymlink(
     const src = try expandHome(arena, sym.src, home_path);
     const dest = try expandHome(arena, sym.dest, home_path);
 
-    if (verbose) log.info("\tsym> {s} -> {s}", .{ dest, src });
+    if (verbose) log.info("sym> {s} -> {s}", .{ dest, src });
 
     const stat = try Io.Dir.cwd().statFile(io, src, .{});
     try Io.Dir.cwd().symLinkAtomic(
@@ -167,7 +177,7 @@ fn execBuiltin(
     trash_path: []const u8,
     verbose: bool,
 ) !void {
-    if (verbose) log.info("\tblt> {} {s}", .{ blt.cmd, blt.args });
+    if (verbose) log.info("blt> {} {s}", .{ blt.cmd, blt.args });
 
     const pathed_args = try expandHome(arena, blt.args, home_path);
 
@@ -182,7 +192,7 @@ fn execBuiltin(
                     switch (err) {
                         error.PathAlreadyExists => {
                             if (verbose) {
-                                log.info("\tPath {q} already exists; skipping\n", .{blt.args});
+                                log.info("Path {q} already exists; skipping\n", .{blt.args});
                             }
                         },
                         else => return err,
@@ -199,17 +209,30 @@ fn execBuiltin(
             try Io.Dir.cwd().copyFile(copy_src, Io.Dir.cwd(), copy_dest, io, .{});
         },
         .move => {
+            var src_dest_it = mem.splitScalar(u8, blt.args, ' ');
+            const move_src = src_dest_it.next() orelse unreachable;
+            const move_dest = src_dest_it.next() orelse unreachable;
+
             if (is_directory) {
-                var it = Io.Dir.cwd().iterate();
-                while (try it.next(io)) |entry| {
-                    std.log.debug("move_dir: {any}", .{entry});
+                const cwd = try Io.Dir.openDir(.cwd(), io, move_src, .{ .iterate = true });
+                defer cwd.close(io);
+                var base_dir = move_src;
+
+                var dir_it = cwd.iterate();
+                while (try dir_it.next(io)) |entry| {
+                    if (entry.kind == .directory) {
+                        base_dir = try mem.join(arena, Io.Dir.path.sep_str, &.{ base_dir, entry.name });
+                        // recurse into the dir
+                    } else {
+                        const file_to_move = try mem.join(arena, Io.Dir.path.sep_str, &.{ base_dir, entry.name });
+                        std.log.info("move_dir: {s}: {}", .{ entry.name, entry.kind });
+                        std.log.info("would move {s} to {s}", .{ entry.name, file_to_move });
+                    }
                 }
+
                 fatal.fmt("Copying directories is unimplemented", .{});
             }
 
-            var it = mem.splitScalar(u8, blt.args, ' ');
-            const move_src = it.next() orelse unreachable;
-            const move_dest = it.next() orelse unreachable;
             try Io.Dir.cwd().rename(move_src, .cwd(), move_dest, io);
         },
         .delete => del: {
@@ -245,7 +268,6 @@ fn execBuiltin(
 
             try Io.Dir.cwd().rename(blt.args, .cwd(), del_dest, io);
         },
-        ._none => unreachable,
     }
 }
 
@@ -283,6 +305,8 @@ fn parseFromSrc(self: *Recipe, io: Io, arena: Allocator, contents: []const u8) !
     assert(lines.buffer.len > 0);
 
     var line_no: u64 = 0;
+    var to_multiline_end: u64 = 0;
+
     parse: while (lines.next()) |line| {
         line_no += 1;
 
@@ -304,8 +328,19 @@ fn parseFromSrc(self: *Recipe, io: Io, arena: Allocator, contents: []const u8) !
             mem.startsWith(u8, src, ":sym") or
             mem.startsWith(u8, src, ":ex"))
         {
-            const cmd = parseCmd(io, arena, src, line_no) catch |err| fatal.oom(err);
+            var cmd_src = src;
+            if (mem.endsWith(u8, src, "\\")) {
+                const collected = try collectMultiLine(
+                    arena,
+                    try mem.join(arena, "\n", &.{ src, lines.rest() }),
+                );
+                cmd_src = collected.str;
+                to_multiline_end = collected.to_skip;
+            }
+
+            const cmd = parseCmd(io, arena, cmd_src, line_no) catch |err| fatal.oom(err);
             try self.workspaces.items[current_wp].entries.append(arena, .{ .command = cmd });
+            continue :parse;
         } else if (mem.eql(u8, src, "}")) {
             if (current_wp == 0) reportError(io, "Unexpected '}'", .{
                 .src = src,
@@ -318,6 +353,11 @@ fn parseFromSrc(self: *Recipe, io: Io, arena: Allocator, contents: []const u8) !
         } else if (mem.startsWith(u8, src, "//")) {
             try self.workspaces.items[current_wp].entries.append(arena, .{ .comment = src });
         } else {
+            if (to_multiline_end != 0) {
+                to_multiline_end -= 1;
+                continue :parse;
+            }
+
             reportError(
                 io,
                 "Unexpected entry",
@@ -331,6 +371,35 @@ fn parseFromSrc(self: *Recipe, io: Io, arena: Allocator, contents: []const u8) !
             .{ .src = "", .file = RECIPE_SRC, .line_no = line_no, .offset = 0 },
         );
     }
+}
+
+fn collectMultiLine(gpa: Allocator, lines: []const u8) !struct {
+    str: []const u8,
+    to_skip: u32,
+} {
+    var collected: []const u8 = "";
+    var to_skip: u32 = 0;
+
+    var it = mem.splitScalar(u8, lines, '\n');
+    collect: while (it.next()) |line| {
+        if (mem.endsWith(u8, line, "\\")) {
+            collected = try mem.join(gpa, " ", &.{
+                collected,
+                try mem.replaceOwned(u8, gpa, line, "\\", ""),
+            });
+            to_skip += 1;
+
+            if (it.peek()) |next_line| {
+                if (!mem.endsWith(u8, next_line, "\\")) {
+                    collected = try mem.join(gpa, " ", &.{ collected, next_line });
+                    to_skip += 1;
+                    break :collect;
+                }
+            }
+        }
+    }
+
+    return .{ .str = collected, .to_skip = to_skip };
 }
 
 fn parseWorkspace(io: Io, src: []const u8, line: usize) Workspace {
@@ -426,7 +495,7 @@ fn parseCmd(
                 }
             }
         } else if (mem.eql(u8, f, ":b")) {
-            cmd = .{ .builtin = .{ .cmd = ._none, .args = "" } };
+            cmd = .{ .builtin = .{ .cmd = undefined, .args = "" } };
             if (it.next()) |ib| {
                 const ib_cmd = std.meta.stringToEnum(Builtins, ib) orelse
                     reportError(
@@ -440,11 +509,6 @@ fn parseCmd(
                     .move => .move,
                     .delete => .delete,
                     .create => .create,
-                    ._none => reportError(
-                        io,
-                        "Unknown builtin command",
-                        .{ .src = src, .file = RECIPE_SRC, .line_no = line, .offset = f.len + 1 },
-                    ),
                 };
 
                 var arg_count: u32 = 0;
@@ -541,11 +605,11 @@ pub fn dir(
 ) !void {
     switch (mode) {
         .create => {
-            if (verbose) std.log.info("\tCreating {q}", .{path});
+            if (verbose) std.log.info("Creating {q}", .{path});
             try std.Io.Dir.createDirPath(.cwd(), io, path);
         },
         .destroy => {
-            if (verbose) std.log.info("\tDeleting {q}", .{path});
+            if (verbose) std.log.info("Deleting {q}", .{path});
             std.Io.Dir.deleteTree(.cwd(), io, path) catch |err|
                 fatal.fmt("Failed to delete .trash dir: {s}", .{@errorName(err)});
         },
@@ -567,7 +631,7 @@ pub fn fmtPot(
     var file_writer = formatted_src.file.writer(io, &buffer);
     const writer = &file_writer.interface;
 
-    const formatted = try self.fmt(arena);
+    const formatted = try self.format(arena);
 
     try writer.writeAll(formatted);
     try writer.flush();
@@ -575,7 +639,7 @@ pub fn fmtPot(
     try formatted_src.replace(io);
 }
 
-fn fmt(
+fn format(
     self: Recipe,
     arena: Allocator,
 ) ![]const u8 {
@@ -584,7 +648,7 @@ fn fmt(
     var sb: ArrayList([]const u8) = .empty;
     for (self.workspaces.items, 0..) |wp, wp_idx| {
         if (wp_idx != 0) {
-            try sb.append(arena, try std.fmt.allocPrint(arena, "\n:wp {s} {{", .{wp.name}));
+            try sb.append(arena, try fmt.allocPrint(arena, "\n:wp {s} {{", .{wp.name}));
         }
         const indent = if (wp_idx == 0) "" else "  ";
         for (wp.entries.items) |entry| {
@@ -598,11 +662,10 @@ fn fmt(
                                 .create => "create",
                                 .delete => "delete",
                                 .move => "move",
-                                ._none => unreachable,
                             };
                             try sb.append(
                                 arena,
-                                try std.fmt.allocPrint(
+                                try fmt.allocPrint(
                                     arena,
                                     "{s}:b {s} {s}",
                                     .{ indent, b_str, b.args },
@@ -610,19 +673,44 @@ fn fmt(
                             );
                         },
                         .external => |ex| {
+                            var it = mem.tokenizeScalar(u8, ex.args, ' ');
+                            var args: []const u8 = "";
+
+                            { // multiline long commands
+                                var count: u32 = 0;
+
+                                fmt_extern: while (it.next()) |arg| : (count += 1) {
+                                    if (count == 0) {
+                                        args = arg;
+                                        continue :fmt_extern;
+                                    }
+                                    if (count == MAX_ARGS_ON_LINE) {
+                                        args = try fmt.allocPrint(arena,
+                                            \\{s} \
+                                            \\{s}    {s}
+                                        , .{ args, indent, arg });
+
+                                        count = 0;
+                                        continue :fmt_extern;
+                                    }
+
+                                    args = try fmt.allocPrint(arena, "{s} {s}", .{ args, arg });
+                                }
+                            }
+
                             try sb.append(
                                 arena,
-                                try std.fmt.allocPrint(
+                                try fmt.allocPrint(
                                     arena,
                                     "{s}:ex {s} {s}",
-                                    .{ indent, ex.bin, ex.args },
+                                    .{ indent, ex.bin, args },
                                 ),
                             );
                         },
                         .symlink => |sym| {
                             try sb.append(
                                 arena,
-                                try std.fmt.allocPrint(
+                                try fmt.allocPrint(
                                     arena,
                                     "{s}:sym {s} {s}",
                                     .{ indent, sym.src, sym.dest },
@@ -665,7 +753,7 @@ test "parse inline commands" {
         \\ :b copy file1 file2
     ;
 
-    var recipe: Recipe = .init();
+    var recipe: Recipe = .init(.{ .testing = true });
     try recipe.parseFromSrc(std.testing.io, allocator, src);
     try std.testing.expect(recipe.workspaces.items.len == 1);
     const root_wp = recipe.workspaces.items[0];
@@ -692,7 +780,7 @@ test "parse multiple workspaces" {
         \\ }
     ;
 
-    var recipe: Recipe = .init();
+    var recipe: Recipe = .init(.{ .testing = true });
     try recipe.parseFromSrc(std.testing.io, allocator, src);
     try std.testing.expect(recipe.workspaces.items.len == 3);
     try std.testing.expect(mem.eql(u8, recipe.workspaces.items[0].name, ROOT_WP));
@@ -727,7 +815,7 @@ test "builtin" {
         \\
     ;
     const trash_dir = ".testing_trash";
-    var recipe: Recipe = .init();
+    var recipe: Recipe = .init(.{ .testing = true });
     try recipe.dir(io, trash_dir, false, .create);
     defer recipe.dir(io, trash_dir, false, .destroy) catch unreachable;
 
@@ -742,7 +830,7 @@ test "builtin" {
     try recipe.dir(io, ".test", false, .destroy);
 }
 
-test fmt {
+test format {
     var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer testing_arena.deinit();
     const allocator = testing_arena.allocator();
@@ -768,9 +856,57 @@ test fmt {
         \\}
     ;
 
-    var recipe: Recipe = .init();
+    var recipe: Recipe = .init(.{ .testing = true });
     try recipe.parseFromSrc(io, allocator, src);
 
-    const formatted = try recipe.fmt(allocator);
+    const formatted = try recipe.format(allocator);
+    try std.testing.expectEqualStrings(expected_formatted, formatted);
+}
+
+test "new line continuation" {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+    const io = std.testing.io;
+
+    const src =
+        \\:sym example com
+        \\
+        \\:wp example {
+        \\  :b create something
+        \\  :ex echo hello
+        \\}
+        \\:ex some really \
+        \\ long command\
+        \\ that we should \
+        \\ handle
+        \\ :ex some other command
+    ;
+
+    var recipe: Recipe = .init(.{ .testing = true });
+    try recipe.parseFromSrc(io, allocator, src);
+}
+
+test "new line formatting" {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+    const io = std.testing.io;
+
+    const src =
+        \\:ex some really   \
+        \\ long   command\
+        \\ that  we should \
+        \\ handle
+    ;
+
+    const expected_formatted =
+        \\:ex some really long command that we should \
+        \\    handle
+    ;
+
+    var recipe: Recipe = .init(.{ .testing = true });
+    try recipe.parseFromSrc(io, allocator, src);
+    const formatted = try recipe.format(allocator);
     try std.testing.expectEqualStrings(expected_formatted, formatted);
 }

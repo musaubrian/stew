@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         error.Unexpected => fatal.fmt("Unexpected error when parsing args", .{}),
     };
 
-    var recipe: Recipe = .init();
+    var recipe: Recipe = .init(.{ .testing = false });
     try recipe.dir(io, trash_dir_path, verbose, .create);
     // should we automatically remove the trash dir after run
     // or let the user remove it with 'clean'?

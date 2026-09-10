@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn fmt(comptime format: []const u8, args: anytype) noreturn {
-    std.debug.print("error: " ++ format ++ "\n", args);
+    std.log.err(format ++ "\n", args);
     std.process.exit(1);
 }
 
