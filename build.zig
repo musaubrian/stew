@@ -26,6 +26,13 @@ pub fn build(b: *std.Build) void {
     version_opts.addOption(std.lang.Optimize, "mode", optimize);
     exe.root_module.addOptions("version", version_opts);
 
+    const results = b.runFallible(&.{ "git", "rev-parse", "--short", "HEAD" }, .{});
+    const hash = switch (results) {
+        .success => |hash| std.mem.trim(u8, hash, "\n"),
+        else => "Unknown",
+    };
+    version_opts.addOption([]const u8, "hash", hash);
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
