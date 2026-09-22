@@ -75,7 +75,7 @@ pub fn execute(
     home_path: ?[]const u8,
     verbose: bool,
 ) !void {
-    if (home_path == null and !self.testing) std.log.warn("No HOME directory found", .{});
+    if (home_path == null and !self.testing) log.warn("No HOME directory found", .{});
     for (self.workspaces.items) |step| {
         try executeWp(io, arena, step, home_path, trash_path, verbose);
     }
@@ -118,7 +118,7 @@ fn execExternal(
 ) !void {
     if (verbose) log.info("cmd> {s} {s}", .{ ex.bin, ex.args });
     const raw = try mem.join(arena, " ", &[_][]const u8{ ex.bin, ex.args });
-    const proper_args = try split_str(arena, raw, ' ');
+    const proper_args = try splitStr(arena, raw, ' ');
 
     // TODO :: Add a way to specify a timeout from the stew file?
     const results = std.process.run(arena, io, .{ .argv = proper_args }) catch |err| {
@@ -248,8 +248,9 @@ fn execBuiltin(
                     error.FileNotFound => unreachable,
                     else => return err,
                 };
+
             var del_dest = blt.args;
-            const deletion_path_chunks = try split_str(arena, blt.args, Io.Dir.path.sep);
+            const deletion_path_chunks = try splitStr(arena, blt.args, Io.Dir.path.sep);
 
             if (deletion_path_chunks.len > 1) {
                 const path_to_rebuild = try mem.join(
@@ -605,11 +606,11 @@ pub fn dir(
 ) !void {
     switch (mode) {
         .create => {
-            if (verbose) std.log.info("Creating {q}", .{path});
+            if (verbose) log.info("Creating {q}", .{path});
             try std.Io.Dir.createDirPath(.cwd(), io, path);
         },
         .destroy => {
-            if (verbose) std.log.info("Deleting {q}", .{path});
+            if (verbose) log.info("Deleting {q}", .{path});
             std.Io.Dir.deleteTree(.cwd(), io, path) catch |err|
                 fatal.fmt("Failed to delete .trash dir: {s}", .{@errorName(err)});
         },
@@ -728,10 +729,11 @@ fn format(
     return try mem.join(arena, "\n", slices);
 }
 
-fn split_str(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
+/// The caller owns the returned memory.
+fn splitStr(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
     var buf: ArrayList([]const u8) = .empty;
 
-    var it = mem.splitScalar(u8, buffer, delimiter);
+    var it = mem.tokenizeScalar(u8, buffer, delimiter);
     while (it.next()) |item| try buf.append(gpa, item);
 
     return try buf.toOwnedSlice(gpa);
