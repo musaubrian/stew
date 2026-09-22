@@ -237,8 +237,20 @@ fn execBuiltin(
         },
         .delete => del: {
             if (is_directory) {
-                // TODO :: move to .trash first, then actually delete after everything gets done
-                try Io.Dir.cwd().deleteTree(io, blt.args);
+                const ss = try splitStr(arena, blt.args, Io.Dir.path.sep);
+                assert(ss.len >= 1);
+
+                // ./example/ -> [".", "example"]
+                // /home/user/example/ -> ["home", "user", "example"]
+                const last = ss[ss.len - 1];
+
+                const dest_path = try std.fmt.allocPrint(
+                    arena,
+                    "{s}{s}{s}{s}",
+                    .{ trash_path, Io.Dir.path.sep_str, last, Io.Dir.path.sep_str },
+                );
+
+                try Io.Dir.cwd().rename(blt.args, .cwd(), dest_path, io);
                 break :del;
             }
 
