@@ -200,37 +200,60 @@ fn execBuiltin(
             }
         },
         .copy => {
-            if (is_directory) fatal.fmt("Copying directories is unimplemented", .{});
-
             var it = mem.splitScalar(u8, blt.args, ' ');
             const copy_src = it.next() orelse unreachable;
             const copy_dest = it.next() orelse unreachable;
 
-            try Io.Dir.cwd().copyFile(copy_src, Io.Dir.cwd(), copy_dest, io, .{});
-        },
-        .move => {
-            var src_dest_it = mem.splitScalar(u8, blt.args, ' ');
-            const move_src = src_dest_it.next() orelse unreachable;
-            const move_dest = src_dest_it.next() orelse unreachable;
-
             if (is_directory) {
-                const cwd = try Io.Dir.openDir(.cwd(), io, move_src, .{ .iterate = true });
+                const cwd = try Io.Dir.openDir(.cwd(), io, copy_src, .{ .iterate = true });
                 defer cwd.close(io);
-                var base_dir = move_src;
 
-                var dir_it = cwd.iterate();
-                while (try dir_it.next(io)) |entry| {
+                const copy_dest_no_trailing = copy_dest[0 .. copy_dest.len - 1];
+                try Io.Dir.createDirPath(.cwd(), io, copy_dest);
+
+                var current_dest: []const u8 = copy_dest_no_trailing;
+
+                var walker = try Io.Dir.walk(cwd, arena);
+                defer walker.deinit();
+                while (try walker.next(io)) |entry| {
                     if (entry.kind == .directory) {
-                        base_dir = try mem.join(arena, Io.Dir.path.sep_str, &.{ base_dir, entry.name });
-                        // recurse into the dir
+                        current_dest = try std.fmt.allocPrint(
+                            arena,
+                            "{s}{s}{s}",
+                            .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
+                        );
+
+                        try Io.Dir.createDirPath(.cwd(), io, current_dest);
                     } else {
-                        const file_to_move = try mem.join(arena, Io.Dir.path.sep_str, &.{ base_dir, entry.name });
-                        std.log.info("move_dir: {s}: {}", .{ entry.name, entry.kind });
-                        std.log.info("would move {s} to {s}", .{ entry.name, file_to_move });
+                        const copy_src_no_trailing = copy_src[0 .. copy_src.len - 1];
+                        const copy_file_dest = try std.fmt.allocPrint(
+                            arena,
+                            "{s}{s}{s}",
+                            .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
+                        );
+                        const file_src = try std.fmt.allocPrint(
+                            arena,
+                            "{s}{s}{s}",
+                            .{ copy_src_no_trailing, Io.Dir.path.sep_str, entry.path },
+                        );
+
+                        try Io.Dir.cwd().copyFile(
+                            file_src,
+                            Io.Dir.cwd(),
+                            copy_file_dest,
+                            io,
+                            .{ .replace = true },
+                        );
                     }
                 }
-
-                fatal.fmt("Copying directories is unimplemented", .{});
+            } else {
+                try Io.Dir.cwd().copyFile(
+                    copy_src,
+                    Io.Dir.cwd(),
+                    copy_dest,
+                    io,
+                    .{ .replace = true },
+                );
             }
         },
         .move => {
@@ -827,8 +850,11 @@ test "builtin" {
         \\ :b delete .test/to_delete
         \\
         \\ :wp example {
-        \\   :b create .test/to_move
-        \\   :b move   .test/to_move .test/nested/to_move
+        \\   :b create .test/to_move/
+        \\   :b move   .test/to_move/ .test/nested/to_move/
+        \\   :b copy   .test/nested/to_move .test/nested/to_move_1/
+        \\   :b copy   .test/nested/to_move .test/nested/to_move_2/
+        \\   :b delete .test/nested/to_move_1/
         \\ }
         \\ :ex ls ~/work/
         \\
