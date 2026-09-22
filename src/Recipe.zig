@@ -232,6 +232,11 @@ fn execBuiltin(
 
                 fatal.fmt("Copying directories is unimplemented", .{});
             }
+        },
+        .move => {
+            var src_dest_it = mem.splitScalar(u8, blt.args, ' ');
+            const move_src = src_dest_it.next() orelse unreachable;
+            const move_dest = src_dest_it.next() orelse unreachable;
 
             try Io.Dir.cwd().rename(move_src, .cwd(), move_dest, io);
         },
