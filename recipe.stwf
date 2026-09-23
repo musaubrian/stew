@@ -11,3 +11,12 @@
   :b create test.md/
   :b delete test.md/
 }
+
+:wp move {
+  :b copy src/ example/
+  :b delete example/
+}
+
+:wp cleanup {
+  :b delete test/
+}
