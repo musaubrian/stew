@@ -199,62 +199,17 @@ fn execBuiltin(
                     };
             }
         },
-        .copy => {
+        .copy => copy: {
             var it = mem.splitScalar(u8, blt.args, ' ');
             const copy_src = it.next() orelse unreachable;
             const copy_dest = it.next() orelse unreachable;
 
             if (is_directory) {
-                const cwd = try Io.Dir.openDir(.cwd(), io, copy_src, .{ .iterate = true });
-                defer cwd.close(io);
-
-                const copy_dest_no_trailing = copy_dest[0 .. copy_dest.len - 1];
-                try Io.Dir.createDirPath(.cwd(), io, copy_dest);
-
-                var current_dest: []const u8 = copy_dest_no_trailing;
-
-                var walker = try Io.Dir.walk(cwd, arena);
-                defer walker.deinit();
-                while (try walker.next(io)) |entry| {
-                    if (entry.kind == .directory) {
-                        current_dest = try std.fmt.allocPrint(
-                            arena,
-                            "{s}{s}{s}",
-                            .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
-                        );
-
-                        try Io.Dir.createDirPath(.cwd(), io, current_dest);
-                    } else {
-                        const copy_src_no_trailing = copy_src[0 .. copy_src.len - 1];
-                        const copy_file_dest = try std.fmt.allocPrint(
-                            arena,
-                            "{s}{s}{s}",
-                            .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
-                        );
-                        const file_src = try std.fmt.allocPrint(
-                            arena,
-                            "{s}{s}{s}",
-                            .{ copy_src_no_trailing, Io.Dir.path.sep_str, entry.path },
-                        );
-
-                        try Io.Dir.cwd().copyFile(
-                            file_src,
-                            Io.Dir.cwd(),
-                            copy_file_dest,
-                            io,
-                            .{ .replace = true },
-                        );
-                    }
-                }
-            } else {
-                try Io.Dir.cwd().copyFile(
-                    copy_src,
-                    Io.Dir.cwd(),
-                    copy_dest,
-                    io,
-                    .{ .replace = true },
-                );
+                try copyDir(io, arena, copy_src, copy_dest);
+                break :copy;
             }
+
+            try Io.Dir.cwd().copyFile(copy_src, Io.Dir.cwd(), copy_dest, io, .{ .replace = true });
         },
         .move => {
             var src_dest_it = mem.splitScalar(u8, blt.args, ' ');
@@ -309,6 +264,50 @@ fn execBuiltin(
 
             try Io.Dir.cwd().rename(blt.args, .cwd(), del_dest, io);
         },
+    }
+}
+
+fn copyDir(io: Io, allocator: Allocator, src: []const u8, dest: []const u8) !void {
+    const cwd = try Io.Dir.openDir(.cwd(), io, src, .{ .iterate = true });
+    defer cwd.close(io);
+
+    const copy_dest_no_trailing = dest[0 .. dest.len - 1];
+    try Io.Dir.createDirPath(.cwd(), io, dest);
+
+    var current_dest: []const u8 = copy_dest_no_trailing;
+
+    var walker = try Io.Dir.walk(cwd, allocator);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            current_dest = try std.fmt.allocPrint(
+                allocator,
+                "{s}{s}{s}",
+                .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
+            );
+
+            try Io.Dir.createDirPath(.cwd(), io, current_dest);
+        } else {
+            const copy_src_no_trailing = src[0 .. src.len - 1];
+            const copy_file_dest = try std.fmt.allocPrint(
+                allocator,
+                "{s}{s}{s}",
+                .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
+            );
+            const file_src = try std.fmt.allocPrint(
+                allocator,
+                "{s}{s}{s}",
+                .{ copy_src_no_trailing, Io.Dir.path.sep_str, entry.path },
+            );
+
+            try Io.Dir.cwd().copyFile(
+                file_src,
+                Io.Dir.cwd(),
+                copy_file_dest,
+                io,
+                .{ .replace = true },
+            );
+        }
     }
 }
 
