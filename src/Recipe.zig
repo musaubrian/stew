@@ -183,21 +183,22 @@ fn execBuiltin(
 
     const is_directory = mem.endsWith(u8, blt.args, Io.Dir.path.sep_str);
     switch (blt.cmd) {
-        .create => {
+        .create => create: {
             if (is_directory) {
                 try Io.Dir.cwd().createDirPath(io, pathed_args);
-            } else {
-                var atomic_file = try Io.Dir.cwd().createFileAtomic(io, pathed_args, .{});
-                atomic_file.link(io) catch |err|
-                    switch (err) {
-                        error.PathAlreadyExists => {
-                            if (verbose) {
-                                log.info("Path {q} already exists; skipping\n", .{blt.args});
-                            }
-                        },
-                        else => return err,
-                    };
+                break :create;
             }
+
+            var atomic_file = try Io.Dir.cwd().createFileAtomic(io, pathed_args, .{});
+            atomic_file.link(io) catch |err|
+                switch (err) {
+                    error.PathAlreadyExists => {
+                        if (verbose) {
+                            log.info("Path {q} already exists; skipping\n", .{blt.args});
+                        }
+                    },
+                    else => return err,
+                };
         },
         .copy => copy: {
             var it = mem.splitScalar(u8, blt.args, ' ');
