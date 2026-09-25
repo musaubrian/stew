@@ -201,9 +201,12 @@ fn execBuiltin(
                 };
         },
         .copy => copy: {
-            var it = mem.splitScalar(u8, blt.args, ' ');
-            const copy_src = it.next() orelse unreachable;
-            const copy_dest = it.next() orelse unreachable;
+            var it = mem.splitScalar(u8, pathed_args, ' ');
+            var copy_src = it.next() orelse unreachable;
+            var copy_dest = it.next() orelse unreachable;
+
+            copy_src = try expandHome(arena, copy_src, home_path);
+            copy_dest = try expandHome(arena, copy_dest, home_path);
 
             if (is_directory) {
                 try copyDir(io, arena, copy_src, copy_dest);
@@ -213,15 +216,18 @@ fn execBuiltin(
             try Io.Dir.cwd().copyFile(copy_src, Io.Dir.cwd(), copy_dest, io, .{ .replace = true });
         },
         .move => {
-            var src_dest_it = mem.splitScalar(u8, blt.args, ' ');
-            const move_src = src_dest_it.next() orelse unreachable;
-            const move_dest = src_dest_it.next() orelse unreachable;
+            var src_dest_it = mem.splitScalar(u8, pathed_args, ' ');
+            var move_src = src_dest_it.next() orelse unreachable;
+            var move_dest = src_dest_it.next() orelse unreachable;
+
+            move_src = try expandHome(arena, move_src, home_path);
+            move_dest = try expandHome(arena, move_dest, home_path);
 
             try Io.Dir.cwd().rename(move_src, .cwd(), move_dest, io);
         },
         .delete => del: {
             if (is_directory) {
-                const ss = try splitStr(arena, blt.args, Io.Dir.path.sep);
+                const ss = try splitStr(arena, pathed_args, Io.Dir.path.sep);
                 assert(ss.len >= 1);
 
                 // ./example/ -> [".", "example"]
@@ -234,12 +240,12 @@ fn execBuiltin(
                     .{ trash_path, Io.Dir.path.sep_str, last, Io.Dir.path.sep_str },
                 );
 
-                try copyDir(io, arena, blt.args, delete_dest);
+                try copyDir(io, arena, pathed_args, delete_dest);
                 // This is a crutch to ensure that the dir is actually
                 // deleted, moving/renaming should delete the dir
                 // and it does in the "move" builtin but here
                 // but the copies both exist
-                try Io.Dir.deleteTree(.cwd(), io, blt.args);
+                try Io.Dir.deleteTree(.cwd(), io, pathed_args);
 
                 break :del;
             }
@@ -251,8 +257,8 @@ fn execBuiltin(
                     else => return err,
                 };
 
-            var del_dest = blt.args;
-            const deletion_path_chunks = try splitStr(arena, blt.args, Io.Dir.path.sep);
+            var del_dest = pathed_args;
+            const deletion_path_chunks = try splitStr(arena, del_dest, Io.Dir.path.sep);
 
             if (deletion_path_chunks.len > 1) {
                 const path_to_rebuild = try mem.join(
@@ -269,7 +275,7 @@ fn execBuiltin(
                 );
             }
 
-            try Io.Dir.cwd().rename(blt.args, .cwd(), del_dest, io);
+            try Io.Dir.cwd().rename(pathed_args, .cwd(), del_dest, io);
         },
     }
 }
@@ -786,7 +792,8 @@ fn splitStr(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
 }
 
 fn expandHome(gpa: Allocator, path: []const u8, home: ?[]const u8) ![]const u8 {
-    if (!mem.startsWith(u8, path, HOME_IDENT) or home == null) return path;
+    if (!mem.containsAtLeast(u8, path, 1, HOME_IDENT) or
+        !mem.startsWith(u8, path, HOME_IDENT) or home == null) return path;
 
     return try mem.replaceOwned(u8, gpa, path, HOME_IDENT, home.?);
 }
