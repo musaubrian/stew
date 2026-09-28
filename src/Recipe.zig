@@ -75,9 +75,11 @@ pub fn execute(
     home_path: ?[]const u8,
     verbose: bool,
 ) !void {
-    if (home_path == null and !self.testing) log.warn("No HOME directory found", .{});
+    var home = home_path;
+    if (home == null and self.testing) home = "./test";
+    if (home == null and !self.testing) log.warn("No HOME directory found", .{});
     for (self.workspaces.items) |step| {
-        try executeWp(io, arena, step, home_path, trash_path, verbose);
+        try executeWp(io, arena, step, home, trash_path, verbose);
     }
 }
 
@@ -101,7 +103,7 @@ pub fn executeWp(
                 switch (cmd) {
                     .builtin => |blt| try execBuiltin(io, arena, blt, home_path, trash_path, verbose),
                     .symlink => |sym| try execSymlink(io, arena, sym, home_path, verbose),
-                    .external => |ex| try execExternal(io, arena, ex, verbose),
+                    .external => |ex| try execExternal(io, arena, ex, home_path, verbose),
                 }
             },
         }
@@ -114,10 +116,14 @@ fn execExternal(
     io: Io,
     arena: Allocator,
     ex: ExternalCmd,
+    home_path: ?[]const u8,
     verbose: bool,
 ) !void {
     if (verbose) log.info("cmd> {s} {s}", .{ ex.bin, ex.args });
-    const raw = try mem.join(arena, " ", &[_][]const u8{ ex.bin, ex.args });
+    const raw = try mem.join(arena, " ", &[_][]const u8{
+        ex.bin,
+        try expandHome(arena, ex.args, home_path.?),
+    });
     const proper_args = try splitStr(arena, raw, ' ');
 
     // TODO :: Add a way to specify a timeout from the stew file?
@@ -792,7 +798,7 @@ fn splitStr(gpa: Allocator, buffer: []const u8, delimiter: u8) ![][]const u8 {
 }
 
 fn expandHome(gpa: Allocator, path: []const u8, home: ?[]const u8) ![]const u8 {
-    if (!mem.containsAtLeast(u8, path, 1, HOME_IDENT) or
+    if (!mem.containsAtLeast(u8, path, 1, HOME_IDENT) and
         !mem.startsWith(u8, path, HOME_IDENT) or home == null) return path;
 
     return try mem.replaceOwned(u8, gpa, path, HOME_IDENT, home.?);
@@ -967,4 +973,23 @@ test "new line formatting" {
     try recipe.parseFromSrc(io, allocator, src);
     const formatted = try recipe.format(allocator);
     try std.testing.expectEqualStrings(expected_formatted, formatted);
+}
+
+test "expand home" {
+    var testing_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer testing_arena.deinit();
+    const allocator = testing_arena.allocator();
+
+    const testing_home_path = "/home/test";
+
+    const cases: [4]struct { src: []const u8, expected: []const u8 } = .{
+        .{ .src = "./example", .expected = "./example" },
+        .{ .src = "@home/example", .expected = "/home/test/example" },
+        .{ .src = "./example1 @home/example", .expected = "./example1 /home/test/example" },
+        .{ .src = "@home/example1 @home/example", .expected = "/home/test/example1 /home/test/example" },
+    };
+    for (cases) |c| {
+        const new = try expandHome(allocator, c.src, testing_home_path);
+        try std.testing.expectEqualStrings(c.expected, new);
+    }
 }
