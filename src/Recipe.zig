@@ -240,8 +240,7 @@ fn execBuiltin(
                 // /home/user/example/ -> ["home", "user", "example"]
                 const last = ss[ss.len - 1];
 
-                const delete_dest = try std.fmt.allocPrint(
-                    arena,
+                const delete_dest = try arena.print(
                     "{s}{s}{s}{s}",
                     .{ trash_path, Io.Dir.path.sep_str, last, Io.Dir.path.sep_str },
                 );
@@ -299,8 +298,7 @@ fn copyDir(io: Io, allocator: Allocator, src: []const u8, dest: []const u8) !voi
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
         if (entry.kind == .directory) {
-            current_dest = try std.fmt.allocPrint(
-                allocator,
+            current_dest = try allocator.print(
                 "{s}{s}{s}",
                 .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
             );
@@ -308,13 +306,11 @@ fn copyDir(io: Io, allocator: Allocator, src: []const u8, dest: []const u8) !voi
             try Io.Dir.createDirPath(.cwd(), io, current_dest);
         } else {
             const copy_src_no_trailing = src[0 .. src.len - 1];
-            const copy_file_dest = try std.fmt.allocPrint(
-                allocator,
+            const copy_file_dest = try allocator.print(
                 "{s}{s}{s}",
                 .{ copy_dest_no_trailing, Io.Dir.path.sep_str, entry.path },
             );
-            const file_src = try std.fmt.allocPrint(
-                allocator,
+            const file_src = try allocator.print(
                 "{s}{s}{s}",
                 .{ copy_src_no_trailing, Io.Dir.path.sep_str, entry.path },
             );
@@ -707,7 +703,7 @@ fn format(
     var sb: ArrayList([]const u8) = .empty;
     for (self.workspaces.items, 0..) |wp, wp_idx| {
         if (wp_idx != 0) {
-            try sb.append(arena, try fmt.allocPrint(arena, "\n:wp {s} {{", .{wp.name}));
+            try sb.append(arena, try arena.print("\n:wp {s} {{", .{wp.name}));
         }
         const indent = if (wp_idx == 0) "" else "  ";
         for (wp.entries.items) |entry| {
@@ -744,7 +740,7 @@ fn format(
                                         continue :fmt_extern;
                                     }
                                     if (count == MAX_ARGS_ON_LINE) {
-                                        args = try fmt.allocPrint(arena,
+                                        args = try arena.print(
                                             \\{s} \
                                             \\{s}    {s}
                                         , .{ args, indent, arg });
@@ -753,7 +749,7 @@ fn format(
                                         continue :fmt_extern;
                                     }
 
-                                    args = try fmt.allocPrint(arena, "{s} {s}", .{ args, arg });
+                                    args = try arena.print("{s} {s}", .{ args, arg });
                                 }
                             }
 

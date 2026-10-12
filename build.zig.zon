@@ -7,7 +7,7 @@
             .hash = "known_folders-0.0.0-Fy-PJiDLAAB98m3uYUzatrTb2mO2fpvwx2zpSroEtfbO",
         },
     },
-    .minimum_zig_version = "0.17.0-dev.1946+d813faaf0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{""},
     .fingerprint = 0xdddd6b9ff369b418,
 }
