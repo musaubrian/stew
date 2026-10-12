@@ -26,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
 
     const trash_dir_path = ".trash";
     const maybe_home_path = try known_folders.getPath(io, arena, init.environ_map, .home);
+    const no_color = init.environ_map.contains("NO_COLOR");
 
     var args = init.minimal.args.toSlice(arena) catch |err| switch (err) {
         error.OutOfMemory => |oom| fatal.oom(oom),
@@ -90,7 +91,10 @@ pub fn main(init: std.process.Init) !void {
                         continue;
                     }
 
-                    const bar = if (idx != recipe.workspaces.items.len - 1) "├─" else "└─";
+                    var bar: []const u8 = if (idx != recipe.workspaces.items.len - 1) "├─" else "└─";
+                    if (no_color) {
+                        bar = if (idx != recipe.workspaces.items.len - 1) "|-" else "+-";
+                    }
 
                     var cmd_count: u32 = 0;
                     for (wp.entries.items) |entry| {
