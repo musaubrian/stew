@@ -5,7 +5,6 @@ const fatal = @import("fatal.zig");
 
 const log = std.log;
 const mem = std.mem;
-const fmt = std.fmt;
 const Io = std.Io;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -720,8 +719,7 @@ fn format(
                             };
                             try sb.append(
                                 arena,
-                                try fmt.allocPrint(
-                                    arena,
+                                try arena.print(
                                     "{s}:b {s} {s}",
                                     .{ indent, b_str, b.args },
                                 ),
@@ -755,8 +753,7 @@ fn format(
 
                             try sb.append(
                                 arena,
-                                try fmt.allocPrint(
-                                    arena,
+                                try arena.print(
                                     "{s}:ex {s} {s}",
                                     .{ indent, ex.bin, args },
                                 ),
@@ -765,8 +762,7 @@ fn format(
                         .symlink => |sym| {
                             try sb.append(
                                 arena,
-                                try fmt.allocPrint(
-                                    arena,
+                                try arena.print(
                                     "{s}:sym {s} {s}",
                                     .{ indent, sym.src, sym.dest },
                                 ),

@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const zon = @import("build.zig.zon");
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(
@@ -19,9 +21,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    exe.root_module.addImport("build.zig.zon", b.createModule(
-        .{ .root_source_file = b.path("build.zig.zon") },
-    ));
     exe.root_module.addImport("known_folders", known_folders);
 
     const version_opts = b.addOptions();
@@ -33,7 +32,8 @@ pub fn build(b: *std.Build) void {
         .success => |hash| std.mem.trim(u8, hash, "\n"),
         else => "Unknown",
     };
-    version_opts.addOption([]const u8, "hash", hash);
+    const version_str = b.allocator.print("{s}-{s}", .{ zon.version, hash }) catch @panic("oom");
+    version_opts.addOption([]const u8, "str", version_str);
 
     b.installArtifact(exe);
 
@@ -43,9 +43,8 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
+    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+
     const run_exe_tests = b.addRunArtifact(exe_tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
@@ -58,6 +57,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe_check.root_module.addImport("known_folders", known_folders);
+    exe_check.root_module.addOptions("version", version_opts);
 
     const check = b.step("check", "Check if app compiles");
     check.dependOn(&exe_check.step);

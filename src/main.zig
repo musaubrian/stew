@@ -61,14 +61,10 @@ pub fn main(init: std.process.Init) !void {
 
     switch (cmd) {
         .version => {
-            const v = @import("version");
+            const version = @import("version");
             std.debug.print(
-                "{s}-{s}{}\n",
-                .{
-                    @import("build.zig.zon").version,
-                    v.hash,
-                    v.mode,
-                },
+                "{s}{}\n",
+                .{ version.str, version.mode },
             );
             std.process.exit(0);
         },
